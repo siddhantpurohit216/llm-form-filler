@@ -1,5 +1,6 @@
 /**
  * Inline UI - Injected UI components for autofilled fields
+ * Includes confidence indicators, action buttons, and "Generate with AI" feature
  */
 
 class InlineUI {
@@ -65,17 +66,25 @@ class InlineUI {
         container.className = 'sja-actions-container';
         container.style.display = 'none';
 
+        // Edit button
         container.appendChild(this.createButton('✏️', 'Edit', () => {
             element.focus();
-            element.select();
+            if (element.select) element.select();
         }));
 
+        // Regenerate button (for LLM/long-form fields)
         if (matchData.source === FIELD_SOURCE.LLM || matchData.isLongForm) {
             container.appendChild(this.createButton('🔁', 'Regenerate', () => {
                 this.handleRegenerate(element, matchData);
             }));
         }
 
+        // Generate with AI button (available for all fields)
+        container.appendChild(this.createButton('✨', 'Generate with AI', () => {
+            this.showGenerateModal(element, matchData);
+        }));
+
+        // Save to Profile button
         container.appendChild(this.createButton('💾', 'Save to Profile', () => {
             this.showSaveModal(element, matchData);
         }));
@@ -93,6 +102,9 @@ class InlineUI {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'sja-action-btn';
+        if (label === 'Generate with AI') {
+            button.className = 'sja-action-btn sja-btn-generate';
+        }
         button.textContent = icon;
         button.setAttribute('aria-label', label);
         button.setAttribute('title', label);
@@ -139,8 +151,7 @@ class InlineUI {
                 data: { fieldId: matchData.fieldId, fieldInfo: { label: matchData.label, type: matchData.type }, regenerate: true }
             });
             if (response?.value) {
-                element.value = response.value;
-                element.dispatchEvent(new Event('input', { bubbles: true }));
+                autofillEngine.fill(element, response.value, matchData.type || 'text');
                 sessionCache.updateValue(matchData.fieldId, response.value, FIELD_SOURCE.LLM);
                 this.updateConfidenceIndicator(element, { ...matchData, confidence: response.confidence || 0.8, source: FIELD_SOURCE.LLM });
             }
@@ -151,6 +162,136 @@ class InlineUI {
             element.disabled = false;
         }
     }
+
+    // ========== Generate with AI Modal ==========
+
+    /**
+     * Show the Generate with AI prompt modal
+     * @param {HTMLElement} element - Target field element
+     * @param {Object} matchData - Field metadata
+     */
+    showGenerateModal(element, matchData) {
+        this.closeAllModals();
+
+        const fieldLabel = matchData.label || element.placeholder || 'this field';
+
+        const modal = document.createElement('div');
+        modal.className = 'sja-modal-overlay';
+        modal.innerHTML = `<div class="sja-modal sja-generate-modal">
+      <div class="sja-modal-header">
+        <h3>✨ Generate with AI</h3>
+        <button class="sja-modal-close">&times;</button>
+      </div>
+      <div class="sja-modal-body">
+        <p>Generate AI content for: <strong>${this.escapeHtml(fieldLabel)}</strong></p>
+        <div class="sja-modal-field">
+          <label for="sja-generate-prompt">Your instructions:</label>
+          <textarea id="sja-generate-prompt" class="sja-input sja-generate-textarea"
+            placeholder="e.g., Write a professional cover letter under 600 characters for this job."
+            rows="4"></textarea>
+        </div>
+        <div id="sja-generate-status" class="sja-generate-status" style="display:none;">
+          <span class="sja-generate-spinner">⏳</span>
+          <span>Generating...</span>
+        </div>
+      </div>
+      <div class="sja-modal-footer">
+        <button class="sja-btn sja-btn-secondary sja-modal-cancel">Cancel</button>
+        <button class="sja-btn sja-btn-primary sja-generate-confirm">✨ Generate</button>
+      </div>
+    </div>`;
+
+        document.body.appendChild(modal);
+        this.activeModals.set(element, modal);
+
+        // Event listeners
+        const promptTextarea = modal.querySelector('#sja-generate-prompt');
+        const generateBtn = modal.querySelector('.sja-generate-confirm');
+        const statusDiv = modal.querySelector('#sja-generate-status');
+
+        modal.querySelector('.sja-modal-close').addEventListener('click', () => this.closeModal(element));
+        modal.querySelector('.sja-modal-cancel').addEventListener('click', () => this.closeModal(element));
+        modal.addEventListener('click', (e) => { if (e.target === modal) this.closeModal(element); });
+
+        generateBtn.addEventListener('click', async () => {
+            const userPrompt = promptTextarea.value.trim();
+            if (!userPrompt) {
+                promptTextarea.focus();
+                promptTextarea.classList.add('sja-input-error');
+                setTimeout(() => promptTextarea.classList.remove('sja-input-error'), 1500);
+                return;
+            }
+
+            // Show loading state
+            generateBtn.disabled = true;
+            generateBtn.textContent = '⏳ Generating...';
+            statusDiv.style.display = 'flex';
+
+            try {
+                const response = await chrome.runtime.sendMessage({
+                    type: MESSAGE_TYPES.LLM_FIELD_GENERATE,
+                    data: {
+                        fieldId: matchData.fieldId || element.id,
+                        fieldInfo: {
+                            label: matchData.label || fieldLabel,
+                            type: matchData.type || 'text',
+                            maxLength: element.maxLength > 0 ? element.maxLength : null
+                        },
+                        userPrompt: userPrompt
+                    }
+                });
+
+                if (response?.value) {
+                    // Fill the field using the autofill engine
+                    autofillEngine.fill(element, response.value, matchData.type || 'text');
+
+                    // Update cache
+                    sessionCache.set(matchData.fieldId || element.id, {
+                        value: response.value,
+                        confidence: response.confidence || 0.85,
+                        source: FIELD_SOURCE.LLM,
+                        reason: `AI generated: ${userPrompt.substring(0, 50)}`
+                    });
+
+                    // Update indicator
+                    this.updateConfidenceIndicator(element, {
+                        confidence: response.confidence || 0.85,
+                        source: FIELD_SOURCE.LLM
+                    });
+
+                    this.highlightField(element, 'inferred');
+                    this.closeModal(element);
+                    this.showToast('✨ Content generated!');
+                } else {
+                    const errorMsg = response?.error || 'Generation failed. Check your API key.';
+                    this.showToast(`❌ ${errorMsg}`, 'error');
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = '✨ Generate';
+                    statusDiv.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('[InlineUI] Generate failed:', error);
+                this.showToast('❌ Generation failed', 'error');
+                generateBtn.disabled = false;
+                generateBtn.textContent = '✨ Generate';
+                statusDiv.style.display = 'none';
+            }
+        });
+
+        // Focus the textarea
+        promptTextarea.focus();
+    }
+
+    /**
+     * Escape HTML to prevent XSS in modal content
+     */
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // ========== Existing UI Methods ==========
 
     updateConfidenceIndicator(element, matchData) {
         const wrapper = element.closest('.sja-field-wrapper');
@@ -172,7 +313,7 @@ class InlineUI {
       <div class="sja-modal-header"><h3>💾 Save to Profile</h3><button class="sja-modal-close">&times;</button></div>
       <div class="sja-modal-body">
         <p>Save this value to your profile?</p>
-        <div><strong>Value:</strong> <span>${truncateText(element.value, 100)}</span></div>
+        <div><strong>Value:</strong> <span>${truncateText(element.value || element.textContent || '', 100)}</span></div>
         <div class="sja-modal-field">
           <label for="sja-profile-path">Save to:</label>
           <select id="sja-profile-path" class="sja-select">
@@ -230,7 +371,7 @@ class InlineUI {
         try {
             const response = await chrome.runtime.sendMessage({
                 type: MESSAGE_TYPES.SAVE_TO_PROFILE,
-                data: { path: profilePath, value: element.value }
+                data: { path: profilePath, value: element.value || element.textContent || '' }
             });
             if (response?.success) {
                 sessionCache.markAsSaved(element.dataset.sjaFieldId);
@@ -280,7 +421,7 @@ class InlineUI {
         this.tooltips.forEach(tooltip => { if (tooltip.parentNode) tooltip.parentNode.removeChild(tooltip); });
         this.tooltips.clear();
         document.querySelectorAll('.sja-field-wrapper').forEach(wrapper => {
-            const input = wrapper.querySelector('input, select, textarea');
+            const input = wrapper.querySelector('input, select, textarea, [contenteditable]');
             if (input) this.removeFieldUI(input);
         });
         document.querySelectorAll('.sja-toast').forEach(t => t.remove());

@@ -118,6 +118,119 @@
             color: #9ca3af;
             margin-top: 4px;
         }
+
+        /* Custom dropdown (simulates Workday/Greenhouse) */
+        .custom-dropdown {
+            position: relative;
+        }
+
+        .custom-dropdown-trigger {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            background: #fff;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .custom-dropdown-trigger:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .custom-dropdown-trigger .arrow {
+            font-size: 10px;
+            color: #9ca3af;
+        }
+
+        .custom-dropdown-list {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            margin-top: 4px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            z-index: 100;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .custom-dropdown-list.open {
+            display: block;
+        }
+
+        .custom-dropdown-option {
+            padding: 10px 12px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .custom-dropdown-option:hover {
+            background: #f3f4f6;
+        }
+
+        /* Contenteditable field */
+        .editable-field {
+            width: 100%;
+            min-height: 80px;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .editable-field:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .editable-field:empty::before {
+            content: attr(data-placeholder);
+            color: #9ca3af;
+        }
+
+        /* Event log */
+        .event-log {
+            margin-top: 16px;
+            padding: 12px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-family: 'Fira Code', monospace;
+            font-size: 11px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .event-log-entry {
+            margin-bottom: 2px;
+            color: #475569;
+        }
+
+        .section-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .badge-new {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
     </style>
 </head>
 
@@ -221,6 +334,81 @@
                 </div>
             </div>
 
+            <!-- Custom Dropdown (Simulates Workday/Greenhouse) -->
+            <div class="section">
+                <h2 class="section-title">Custom Dropdown Fields <span class="section-badge badge-new">NEW</span></h2>
+                <p class="hint" style="margin-bottom: 16px;">These simulate the custom dropdown components used by
+                    Workday, Greenhouse, and other React-based forms.</p>
+
+                <div class="form-group">
+                    <label id="country-label">Country of Residence</label>
+                    <div class="custom-dropdown" id="country-dropdown">
+                        <div role="combobox" aria-expanded="false" aria-controls="country-listbox"
+                            aria-labelledby="country-label" tabindex="0" class="custom-dropdown-trigger"
+                            id="country-combobox">
+                            <span class="selected-text">Select country...</span>
+                            <span class="arrow">▼</span>
+                        </div>
+                        <div role="listbox" id="country-listbox" class="custom-dropdown-list">
+                            <div role="option" class="custom-dropdown-option" data-value="us">United States</div>
+                            <div role="option" class="custom-dropdown-option" data-value="in">India</div>
+                            <div role="option" class="custom-dropdown-option" data-value="ca">Canada</div>
+                            <div role="option" class="custom-dropdown-option" data-value="uk">United Kingdom</div>
+                            <div role="option" class="custom-dropdown-option" data-value="de">Germany</div>
+                            <div role="option" class="custom-dropdown-option" data-value="au">Australia</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label id="employment-label">Employment Type</label>
+                    <div class="custom-dropdown" id="employment-dropdown">
+                        <div role="combobox" aria-expanded="false" aria-controls="employment-listbox"
+                            aria-labelledby="employment-label" tabindex="0" class="custom-dropdown-trigger"
+                            id="employment-combobox">
+                            <span class="selected-text">Select type...</span>
+                            <span class="arrow">▼</span>
+                        </div>
+                        <div role="listbox" id="employment-listbox" class="custom-dropdown-list">
+                            <div role="option" class="custom-dropdown-option" data-value="full-time">Full-time</div>
+                            <div role="option" class="custom-dropdown-option" data-value="part-time">Part-time</div>
+                            <div role="option" class="custom-dropdown-option" data-value="contract">Contract</div>
+                            <div role="option" class="custom-dropdown-option" data-value="internship">Internship</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Contenteditable Field -->
+            <div class="section">
+                <h2 class="section-title">Rich Text Fields <span class="section-badge badge-new">NEW</span></h2>
+                <p class="hint" style="margin-bottom: 16px;">This simulates contenteditable rich text editors used by
+                    some job portals.</p>
+
+                <div class="form-group">
+                    <label>Additional Notes</label>
+                    <div contenteditable="true" class="editable-field" aria-label="Additional Notes"
+                        data-placeholder="Type your additional notes here...">
+                    </div>
+                </div>
+            </div>
+
+            <!-- React-simulated Input -->
+            <div class="section">
+                <h2 class="section-title">React-Simulated Input <span class="section-badge badge-new">NEW</span></h2>
+                <p class="hint" style="margin-bottom: 16px;">This input logs events to verify React-compatible filling
+                    (input + change events must fire).</p>
+
+                <div class="form-group">
+                    <label for="reactInput">Preferred Name</label>
+                    <input type="text" id="reactInput" name="preferredName" placeholder="Your preferred name">
+                </div>
+                <div class="event-log" id="event-log">
+                    <div style="color: #94a3b8; font-style: italic;">Event log (waiting for events on "Preferred Name"
+                        field)...</div>
+                </div>
+            </div>
+
             <!-- Long-form questions -->
             <div class="section">
                 <h2 class="section-title">Application Questions</h2>
@@ -275,9 +463,69 @@
     </div>
 
     <script>
+        // Form submission handler
         document.getElementById('application-form').addEventListener('submit', (e) => {
             e.preventDefault();
             alert('Form submitted! (This is a test form)');
+        });
+
+        // Custom dropdown behavior (simulates Workday/Greenhouse)
+        document.querySelectorAll('.custom-dropdown').forEach(dropdown => {
+            const trigger = dropdown.querySelector('[role="combobox"]');
+            const listbox = dropdown.querySelector('[role="listbox"]');
+            const options = dropdown.querySelectorAll('[role="option"]');
+            const selectedText = trigger.querySelector('.selected-text');
+
+            trigger.addEventListener('click', () => {
+                const isOpen = listbox.classList.contains('open');
+                // Close all other dropdowns
+                document.querySelectorAll('.custom-dropdown-list.open').forEach(list => list.classList.remove('open'));
+                if (!isOpen) {
+                    listbox.classList.add('open');
+                    trigger.setAttribute('aria-expanded', 'true');
+                } else {
+                    listbox.classList.remove('open');
+                    trigger.setAttribute('aria-expanded', 'false');
+                }
+            });
+
+            options.forEach(option => {
+                option.addEventListener('click', () => {
+                    selectedText.textContent = option.textContent;
+                    trigger.dataset.value = option.dataset.value;
+                    listbox.classList.remove('open');
+                    trigger.setAttribute('aria-expanded', 'false');
+                    console.log(`[CustomDropdown] Selected: ${option.textContent} (${option.dataset.value})`);
+                });
+            });
+        });
+
+        // Close dropdowns on outside click
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.custom-dropdown')) {
+                document.querySelectorAll('.custom-dropdown-list.open').forEach(list => {
+                    list.classList.remove('open');
+                    list.previousElementSibling?.setAttribute('aria-expanded', 'false');
+                });
+            }
+        });
+
+        // React-simulated input — log events
+        const reactInput = document.getElementById('reactInput');
+        const eventLog = document.getElementById('event-log');
+        let eventCount = 0;
+
+        ['focus', 'input', 'change', 'blur'].forEach(eventType => {
+            reactInput.addEventListener(eventType, (e) => {
+                eventCount++;
+                const entry = document.createElement('div');
+                entry.className = 'event-log-entry';
+                const time = new Date().toLocaleTimeString();
+                entry.textContent = `[${time}] #${eventCount} ${eventType}: value="${reactInput.value}"`;
+                if (eventCount === 1) eventLog.innerHTML = '';
+                eventLog.appendChild(entry);
+                eventLog.scrollTop = eventLog.scrollHeight;
+            });
         });
     </script>
 </body>

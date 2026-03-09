@@ -1,9 +1,9 @@
 /**
- * LLM Orchestrator - Manages API calls to OpenAI/Anthropic
+ * LLM Orchestrator - Manages API calls to OpenAI/Anthropic/Gemini
  * Handles batching, retries, and fail-safe fallbacks
  */
 
-import { FIELD_MAPPING_PROMPT, LONG_FORM_PROMPT, RESUME_STRUCTURE_PROMPT } from './prompts.js';
+import { FIELD_MAPPING_PROMPT, LONG_FORM_PROMPT, FIELD_GENERATE_PROMPT, RESUME_STRUCTURE_PROMPT } from './prompts.js';
 
 export class LLMOrchestrator {
     constructor() {
@@ -13,7 +13,8 @@ export class LLMOrchestrator {
     }
 
     /**
-     * Batch map fields to profile paths using LLM
+     * Batch map fields to values using LLM
+     * Now sends full profile and expects actual values back
      */
     async batchMapFields(fields, profile, settings) {
         if (!fields.length) return [];
@@ -27,7 +28,6 @@ export class LLMOrchestrator {
                 allMappings.push(...mappings);
             } catch (error) {
                 console.error('[LLM] Batch mapping failed:', error);
-                // Continue with remaining batches
             }
         }
 
@@ -44,7 +44,8 @@ export class LLMOrchestrator {
         if (!response) return [];
 
         try {
-            const parsed = JSON.parse(response);
+            const parsed = this.extractJSON(response);
+            if (!parsed) return [];
             return Array.isArray(parsed) ? parsed : parsed.mappings || [];
         } catch (error) {
             console.error('[LLM] Failed to parse mapping response:', error);
@@ -64,15 +65,42 @@ export class LLMOrchestrator {
         }
 
         try {
-            // Try to parse as JSON first
-            const parsed = JSON.parse(response);
-            return {
-                value: parsed.answer || parsed.response || response,
-                confidence: parsed.confidence || 0.8
-            };
-        } catch {
-            // Plain text response
+            const parsed = this.extractJSON(response);
+            if (parsed) {
+                return {
+                    value: parsed.answer || parsed.response || parsed.value || response,
+                    confidence: parsed.confidence || 0.8
+                };
+            }
             return { value: response.trim(), confidence: 0.75 };
+        } catch {
+            return { value: response.trim(), confidence: 0.75 };
+        }
+    }
+
+    /**
+     * Generate content for a specific field based on user instructions
+     * Used by the "Generate with AI" feature
+     */
+    async generateFieldContent(fieldInfo, userPrompt, profile, settings) {
+        const prompt = this.buildFieldGeneratePrompt(fieldInfo, userPrompt, profile);
+        const response = await this.callLLM(prompt, settings);
+
+        if (!response) {
+            return { value: null, confidence: 0, error: 'LLM call failed' };
+        }
+
+        try {
+            const parsed = this.extractJSON(response);
+            if (parsed) {
+                return {
+                    value: parsed.value || parsed.answer || parsed.response || response,
+                    confidence: parsed.confidence || 0.85
+                };
+            }
+            return { value: response.trim(), confidence: 0.8 };
+        } catch {
+            return { value: response.trim(), confidence: 0.8 };
         }
     }
 
@@ -103,21 +131,20 @@ export class LLMOrchestrator {
     }
 
     /**
-     * Build field mapping prompt
+     * Build field mapping prompt — now sends full profile data
      */
     buildFieldMappingPrompt(fields, profile) {
-        const profileSummary = this.createProfileSummary(profile);
         const fieldsList = fields.map(f => ({
             id: f.id,
             label: f.label,
             hints: f.hints?.slice(0, 5) || [],
             type: f.type,
-            options: f.options?.slice(0, 10) || []
+            options: f.options?.slice(0, 20) || []
         }));
 
         return FIELD_MAPPING_PROMPT
             .replace('{FIELDS}', JSON.stringify(fieldsList, null, 2))
-            .replace('{PROFILE}', JSON.stringify(profileSummary, null, 2));
+            .replace('{PROFILE}', JSON.stringify(profile, null, 2));
     }
 
     /**
@@ -138,24 +165,27 @@ export class LLMOrchestrator {
     }
 
     /**
+     * Build field generation prompt for "Generate with AI" feature
+     */
+    buildFieldGeneratePrompt(fieldInfo, userPrompt, profile) {
+        // Gather some page context
+        const pageTitle = typeof document !== 'undefined' ? document.title : '';
+        const pageContext = pageTitle || 'Job application page';
+
+        return FIELD_GENERATE_PROMPT
+            .replace('{USER_PROMPT}', userPrompt || 'Generate appropriate content for this field')
+            .replace('{FIELD_LABEL}', fieldInfo.label || 'Unknown field')
+            .replace('{FIELD_TYPE}', fieldInfo.type || 'text')
+            .replace('{MAX_LENGTH}', String(fieldInfo.maxLength || 'No limit'))
+            .replace('{PROFILE}', JSON.stringify(profile, null, 2))
+            .replace('{PAGE_CONTEXT}', pageContext);
+    }
+
+    /**
      * Build resume structuring prompt
      */
     buildResumePrompt(resumeText) {
         return RESUME_STRUCTURE_PROMPT.replace('{RESUME_TEXT}', resumeText);
-    }
-
-    /**
-     * Create profile summary for LLM context
-     */
-    createProfileSummary(profile) {
-        return {
-            contact: Object.keys(profile.contact || {}).filter(k => profile.contact[k]),
-            links: Object.keys(profile.links || {}).filter(k => profile.links[k]),
-            hasEducation: (profile.education?.length || 0) > 0,
-            hasExperience: (profile.experience?.length || 0) > 0,
-            skillCount: profile.skills?.length || 0,
-            customFields: Object.keys(profile.customFields || {})
-        };
     }
 
     /**
@@ -332,7 +362,6 @@ export class LLMOrchestrator {
         }
 
         // Strategy 2: Remove markdown code blocks
-        // Handle ```json ... ``` or ``` ... ```
         const codeBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
         if (codeBlockMatch) {
             try {
@@ -342,7 +371,7 @@ export class LLMOrchestrator {
             }
         }
 
-        // Strategy 3: Find JSON object in the text (starts with { ends with })
+        // Strategy 3: Find JSON object in the text
         const jsonObjectMatch = text.match(/\{[\s\S]*\}/);
         if (jsonObjectMatch) {
             try {
@@ -352,7 +381,7 @@ export class LLMOrchestrator {
             }
         }
 
-        // Strategy 4: Find JSON array in the text (starts with [ ends with ])
+        // Strategy 4: Find JSON array in the text
         const jsonArrayMatch = text.match(/\[[\s\S]*\]/);
         if (jsonArrayMatch) {
             try {

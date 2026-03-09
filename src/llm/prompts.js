@@ -1,32 +1,36 @@
 /**
  * LLM Prompt Templates
- * Centralized prompts for field mapping, long-form generation, and resume parsing
+ * Centralized prompts for field mapping, long-form generation, field generation, and resume parsing
  */
 
-export const FIELD_MAPPING_PROMPT = `You are an expert at mapping job application form fields to user profile data.
+export const FIELD_MAPPING_PROMPT = `You are an expert at filling job application forms using user profile data.
 
-Given the following form fields and user profile summary, determine which profile path each field should be filled from.
+Given the following form fields and user profile, determine the actual value to fill into each field.
 
 FORM FIELDS:
 {FIELDS}
 
-USER PROFILE PATHS AVAILABLE:
+USER PROFILE:
 {PROFILE}
 
-For each field, return a JSON array with mappings in this exact format:
+For each field, return a JSON array with the VALUE to fill (not a profile path):
 [
   {
     "fieldId": "the field id",
-    "profilePath": "the dot-notation path in profile (e.g., contact.email, education[0].institution)",
+    "value": "the actual value to fill into the field",
     "confidence": 0.0 to 1.0,
     "reason": "brief explanation"
   }
 ]
 
 Rules:
-- Only include fields you can confidently map (confidence >= 0.6)
-- Use exact profile paths like: contact.email, contact.phone, links.linkedin, education[0].degree
-- For dropdown fields, consider the options when determining the mapping
+- Only include fields you can confidently fill (confidence >= 0.6)
+- Return the actual value, not a path reference
+- For dropdown fields, return a value that matches one of the provided options
+- For yes/no fields, return "Yes" or "No"
+- For checkboxes, return "true" or "false"
+- Be precise with names, emails, phone numbers — use exact values from the profile
+- Never generate executable code
 - Return ONLY the JSON array, no other text`;
 
 export const LONG_FORM_PROMPT = `You are a professional career advisor helping someone fill out a job application.
@@ -47,6 +51,37 @@ Return your response as JSON:
 {
   "answer": "your response text",
   "confidence": 0.8
+}
+
+Return ONLY the JSON, no other text.`;
+
+export const FIELD_GENERATE_PROMPT = `You are a professional career advisor. A user is filling out a job application and wants help generating content for a specific form field.
+
+USER INSTRUCTIONS:
+{USER_PROMPT}
+
+FIELD INFORMATION:
+Label: {FIELD_LABEL}
+Type: {FIELD_TYPE}
+Max Length: {MAX_LENGTH}
+
+USER PROFILE:
+{PROFILE}
+
+PAGE CONTEXT (if available):
+{PAGE_CONTEXT}
+
+Generate content based on the user's instructions. Guidelines:
+- Follow the user's specific instructions precisely
+- Use information from the user profile to personalize the content
+- Be professional and compelling
+- Stay within any character limits
+- Never generate executable code
+
+Return your response as JSON:
+{
+  "value": "the generated text content",
+  "confidence": 0.85
 }
 
 Return ONLY the JSON, no other text.`;

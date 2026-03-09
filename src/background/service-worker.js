@@ -195,6 +195,9 @@ async function handleMessage(message, sender) {
         case 'LLM_GENERATE':
             return await handleLLMGenerate(message.data);
 
+        case 'LLM_FIELD_GENERATE':
+            return await handleLLMFieldGenerate(message.data);
+
         case 'PARSE_RESUME':
             return await handleResumeUpload(message.data);
 
@@ -322,6 +325,31 @@ async function handleLLMGenerate(data) {
         return result;
     } catch (error) {
         console.error('[Background] LLM generate failed:', error);
+        return { value: null, error: error.message };
+    }
+}
+
+/**
+ * Handle field-level AI generation ("Generate with AI" feature)
+ */
+async function handleLLMFieldGenerate(data) {
+    const settings = await getSettings();
+
+    if (!settings.apiKey) {
+        return { value: null, error: 'No API key configured' };
+    }
+
+    try {
+        const profile = await getProfile();
+        const result = await llmOrchestrator.generateFieldContent(
+            data.fieldInfo,
+            data.userPrompt,
+            profile,
+            settings
+        );
+        return result;
+    } catch (error) {
+        console.error('[Background] Field generate failed:', error);
         return { value: null, error: error.message };
     }
 }

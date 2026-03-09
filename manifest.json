@@ -32,18 +32,21 @@
         "src/storage/session-cache.js",
         "src/content/field-extractor.js",
         "src/content/deterministic-matcher.js",
+        "src/content/autofill-engine.js",
         "src/content/inline-ui.js",
         "src/content/content.js"
       ],
       "css": [
         "styles/injected.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "tabs"
   ],
   "host_permissions": [
     "https://api.openai.com/*",

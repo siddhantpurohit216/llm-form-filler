@@ -1,6 +1,7 @@
 /**
- * Field Extractor - Extracts and normalizes form field information
- * Gathers all relevant metadata for intelligent field matching
+ * Field Extractor - Universal Form Field Detection Engine
+ * Detects fields generically across all websites including
+ * Workday, Greenhouse, Lever, and React-based forms
  */
 
 class FieldExtractor {
@@ -9,45 +10,34 @@ class FieldExtractor {
     }
 
     /**
+     * Universal selector list for form field detection
+     */
+    static FIELD_SELECTORS = [
+        'input',
+        'textarea',
+        'select',
+        '[role="textbox"]',
+        '[role="combobox"]',
+        '[contenteditable="true"]'
+    ].join(', ');
+
+    /**
      * Extract all form fields from the page
-     * @returns {Array} Array of normalized field objects
+     * @returns {Array} Array of FieldDescriptor objects
      */
     extractAllFields() {
         const fields = [];
+        const allElements = new Set();
 
-        // Find all standard input, select, and textarea elements
-        const standardInputs = document.querySelectorAll('input, select, textarea');
-
-        // Find Workday custom elements
-        const workdayInputs = document.querySelectorAll([
-            '[data-automation-id*="input"]',
-            '[data-automation-id*="text"]',
-            '[data-automation-id*="select"]',
-            '[data-automation-id*="dropdown"]',
-            '[data-automation-id*="name"]',
-            '[data-automation-id*="email"]',
-            '[data-automation-id*="phone"]',
-            '[data-automation-id*="address"]',
-            '[data-automation-id*="city"]',
-            '[data-automation-id*="postal"]',
-            '[data-automation-id*="formField"]',
-            '[role="textbox"]',
-            '[role="combobox"]',
-            '[role="listbox"]',
-            '[contenteditable="true"]',
-            '.wd-form-field input',
-            '.wd-form-field textarea'
-        ].join(', '));
-
-        // Combine and dedupe elements
-        const allElements = new Set([...standardInputs, ...workdayInputs]);
+        // Find all elements matching universal selectors
+        const found = document.querySelectorAll(FieldExtractor.FIELD_SELECTORS);
+        found.forEach(el => allElements.add(el));
 
         // Also check Shadow DOMs
         this.findShadowDOMInputs(document.body, allElements);
 
         let index = 0;
         allElements.forEach((element) => {
-            // Skip hidden and submit/button types
             if (this.shouldSkipField(element)) {
                 return;
             }
@@ -71,18 +61,15 @@ class FieldExtractor {
     findShadowDOMInputs(root, results) {
         if (!root) return;
 
-        // Check if element has shadow root
         if (root.shadowRoot) {
-            const shadowInputs = root.shadowRoot.querySelectorAll('input, select, textarea, [role="textbox"], [role="combobox"]');
+            const shadowInputs = root.shadowRoot.querySelectorAll(FieldExtractor.FIELD_SELECTORS);
             shadowInputs.forEach(el => results.add(el));
 
-            // Recurse into shadow DOM children
             root.shadowRoot.querySelectorAll('*').forEach(child => {
                 this.findShadowDOMInputs(child, results);
             });
         }
 
-        // Check all children for shadow roots
         root.querySelectorAll('*').forEach(child => {
             if (child.shadowRoot) {
                 this.findShadowDOMInputs(child, results);
@@ -118,25 +105,57 @@ class FieldExtractor {
     }
 
     /**
+     * Normalize the field type to a standard enum
+     * @param {HTMLElement} element
+     * @returns {string} text|dropdown|checkbox|radio|textarea|combobox
+     */
+    normalizeFieldType(element) {
+        const tag = element.tagName?.toLowerCase();
+        const type = element.type?.toLowerCase() || '';
+        const role = element.getAttribute('role');
+
+        if (tag === 'select') return 'dropdown';
+        if (tag === 'textarea') return 'textarea';
+        if (type === 'checkbox') return 'checkbox';
+        if (type === 'radio') return 'radio';
+        if (role === 'combobox') return 'combobox';
+        if (role === 'textbox' || element.getAttribute('contenteditable') === 'true') return 'textarea';
+
+        return 'text';
+    }
+
+    /**
      * Extract all relevant data from a form field
+     * Produces a FieldDescriptor object
      * @param {HTMLElement} element - Form element
      * @param {number} index - Element index for fallback ID
-     * @returns {Object} Normalized field data
+     * @returns {Object} FieldDescriptor
      */
     extractFieldData(element, index) {
-        const tagName = element.tagName.toLowerCase();
-        const type = element.type?.toLowerCase() || tagName;
+        const tagName = element.tagName?.toLowerCase() || '';
+        const fieldType = this.normalizeFieldType(element);
 
         // Generate unique ID if none exists
-        const fieldId = element.id || element.name || `sja_field_${index}`;
+        const fieldId = element.id || element.name ||
+            element.getAttribute('data-automation-id') ||
+            `sja_field_${index}`;
 
-        // Collect all text hints for this field
+        // Label detection priority:
+        // 1. associated <label> element
+        // 2. placeholder
+        // 3. aria-label
+        // 4. name attribute
+        // 5. nearest visible text in DOM
         const labelText = this.findLabelText(element);
         const placeholderText = element.placeholder || '';
         const ariaLabel = element.getAttribute('aria-label') || '';
         const ariaDescribedBy = this.getAriaDescribedByText(element);
         const nearbyText = getNearbyText(element);
         const dataAttributes = this.extractDataAttributes(element);
+
+        // Resolved label using priority chain
+        const label = labelText || placeholderText || ariaLabel ||
+            element.name || nearbyText || '';
 
         // Combine all hints for matching
         const allHints = [
@@ -150,7 +169,6 @@ class FieldExtractor {
             ...Object.values(dataAttributes)
         ].filter(Boolean);
 
-        // Normalize the hints for matching
         const normalizedHints = allHints.map(h => normalizeFieldName(h));
         const combinedHint = allHints.join(' ').toLowerCase();
 
@@ -164,17 +182,8 @@ class FieldExtractor {
             max: element.max || null
         };
 
-        // Extract options for select/datalist elements
-        let options = [];
-        if (tagName === 'select') {
-            options = extractSelectOptions(element);
-        } else if (element.list) {
-            // Datalist options
-            options = Array.from(element.list.options).map(opt => ({
-                value: opt.value,
-                text: opt.textContent.trim()
-            }));
-        }
+        // Extract options for dropdowns and comboboxes
+        const options = this.extractOptions(element, fieldType);
 
         // Determine if this is a long-form text field
         const isLongForm = this.isLongFormField(element, combinedHint);
@@ -183,11 +192,11 @@ class FieldExtractor {
             id: fieldId,
             element: element,
             tagName: tagName,
-            type: type,
+            type: fieldType,
             name: element.name || '',
 
-            // Text hints
-            label: labelText,
+            // Label (resolved by priority)
+            label: label,
             placeholder: placeholderText,
             ariaLabel: ariaLabel,
             nearbyText: nearbyText,
@@ -198,7 +207,7 @@ class FieldExtractor {
             // Constraints
             constraints: constraints,
 
-            // Options (for dropdowns)
+            // Options (for dropdowns/comboboxes)
             options: options,
             hasOptions: options.length > 0,
 
@@ -206,8 +215,11 @@ class FieldExtractor {
             isLongForm: isLongForm,
             isRequired: constraints.required,
 
+            // Confidence score (base: 1.0 for fields with clear labels)
+            confidenceScore: label ? 1.0 : 0.5,
+
             // Current state
-            currentValue: element.value || '',
+            currentValue: element.value || element.textContent?.trim() || '',
             isFilledByExtension: false,
 
             // Matching info (filled by matcher)
@@ -218,7 +230,56 @@ class FieldExtractor {
     }
 
     /**
-     * Find the label text for an element
+     * Extract options from dropdown/combobox elements
+     * @param {HTMLElement} element
+     * @param {string} fieldType
+     * @returns {string[]}
+     */
+    extractOptions(element, fieldType) {
+        // Native <select>
+        if (element.tagName?.toLowerCase() === 'select') {
+            return Array.from(element.options)
+                .filter(opt => opt.value && !opt.disabled)
+                .map(opt => opt.textContent.trim());
+        }
+
+        // Datalist
+        if (element.list) {
+            return Array.from(element.list.options).map(opt =>
+                opt.textContent?.trim() || opt.value
+            );
+        }
+
+        // Custom combobox — try to find associated listbox
+        if (fieldType === 'combobox') {
+            const controlsId = element.getAttribute('aria-controls') ||
+                element.getAttribute('aria-owns');
+            if (controlsId) {
+                const listbox = document.getElementById(controlsId);
+                if (listbox) {
+                    return Array.from(listbox.querySelectorAll('[role="option"], li'))
+                        .map(opt => (opt.textContent || opt.innerText || '').trim())
+                        .filter(Boolean);
+                }
+            }
+
+            // Look for nearby listbox
+            const parent = element.closest('[data-automation-id], .form-field, .field-wrapper, .form-group') || element.parentElement;
+            if (parent) {
+                const listbox = parent.querySelector('[role="listbox"]');
+                if (listbox) {
+                    return Array.from(listbox.querySelectorAll('[role="option"], li'))
+                        .map(opt => (opt.textContent || opt.innerText || '').trim())
+                        .filter(Boolean);
+                }
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Find the label text for an element using priority chain
      * @param {HTMLElement} element - Form element
      * @returns {string} Label text
      */
@@ -236,7 +297,6 @@ class FieldExtractor {
         // Method 2: Wrapping label
         const parentLabel = element.closest('label');
         if (parentLabel) {
-            // Get text content excluding the input element itself
             const clone = parentLabel.cloneNode(true);
             const input = clone.querySelector('input, select, textarea');
             if (input) input.remove();
@@ -247,10 +307,12 @@ class FieldExtractor {
         // Method 3: aria-labelledby
         const labelledBy = element.getAttribute('aria-labelledby');
         if (labelledBy) {
-            const labelElement = document.getElementById(labelledBy);
-            if (labelElement) {
-                texts.push(labelElement.textContent.trim());
-            }
+            const ids = labelledBy.split(/\s+/);
+            const labelTexts = ids.map(id => {
+                const el = document.getElementById(id);
+                return el ? el.textContent.trim() : '';
+            }).filter(Boolean);
+            if (labelTexts.length) texts.push(labelTexts.join(' '));
         }
 
         // Method 4: Previous sibling label
@@ -267,12 +329,11 @@ class FieldExtractor {
         const parent = element.parentElement;
         if (parent) {
             const parentSibling = parent.previousElementSibling;
-            if (parentSibling && (parentSibling.tagName === 'LABEL' || parentSibling.classList.contains('label'))) {
+            if (parentSibling && (parentSibling.tagName === 'LABEL' || parentSibling.classList?.contains('label'))) {
                 texts.push(parentSibling.textContent.trim());
             }
         }
 
-        // Return first non-empty text, cleaned up
         return texts.filter(t => t.length > 0 && t.length < 200)[0] || '';
     }
 
@@ -302,7 +363,6 @@ class FieldExtractor {
     extractDataAttributes(element) {
         const dataAttrs = {};
 
-        // Common data attributes that might contain field hints
         const relevantAttrs = [
             'data-field', 'data-type', 'data-name', 'data-label',
             'data-qa', 'data-testid', 'data-automation-id'
@@ -325,22 +385,18 @@ class FieldExtractor {
      * @returns {boolean} True if long-form
      */
     isLongFormField(element, combinedHint) {
-        // Textareas with sufficient size
-        if (element.tagName.toLowerCase() === 'textarea') {
+        if (element.tagName?.toLowerCase() === 'textarea') {
             const rows = parseInt(element.getAttribute('rows')) || 3;
             if (rows >= 3) return true;
         }
 
-        // Check maxlength - long form usually has higher limit or none
         const maxLength = element.maxLength;
         if (maxLength > 500 || maxLength === -1) {
-            // Also check if the hint suggests a long-form question
             if (isLongFormQuestion(combinedHint)) {
                 return true;
             }
         }
 
-        // Check for common long-form patterns in hints
         return isLongFormQuestion(combinedHint);
     }
 
@@ -367,7 +423,7 @@ class FieldExtractor {
      * @returns {Object} Updated field data
      */
     refreshField(element) {
-        const index = Array.from(document.querySelectorAll('input, select, textarea')).indexOf(element);
+        const index = Array.from(document.querySelectorAll(FieldExtractor.FIELD_SELECTORS)).indexOf(element);
         return this.extractFieldData(element, index);
     }
 

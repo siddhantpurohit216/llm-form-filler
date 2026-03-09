@@ -15,10 +15,10 @@ const DB_CONFIG = {
 
 // Confidence thresholds
 const CONFIDENCE = {
-  HIGH: 0.9,      // Auto-fill without LLM
-  MEDIUM: 0.7,    // May need LLM verification
-  LOW: 0.5,       // Requires LLM assistance
-  UNCERTAIN: 0.3  // Cannot determine
+  HIGH: 0.8,      // Auto-fill without LLM
+  MEDIUM: 0.6,    // May need LLM verification
+  LOW: 0.4,       // Requires LLM assistance
+  UNCERTAIN: 0.2  // Cannot determine
 };
 
 // Confidence levels for UI
@@ -167,7 +167,7 @@ const LONG_FORM_PATTERNS = [
 ];
 
 // Minimum field count to trigger form detection
-const MIN_FORM_FIELDS = 3;
+const MIN_FORM_FIELDS = 1;
 
 // LLM configuration
 const LLM_CONFIG = {
@@ -199,6 +199,7 @@ const MESSAGE_TYPES = {
   GET_PROFILE: 'GET_PROFILE',
   LLM_BATCH_REQUEST: 'LLM_BATCH_REQUEST',
   LLM_GENERATE: 'LLM_GENERATE',
+  LLM_FIELD_GENERATE: 'LLM_FIELD_GENERATE',
   SAVE_TO_PROFILE: 'SAVE_TO_PROFILE',
 
   // Background → Content script

@@ -1,6 +1,7 @@
 /**
  * Main Content Script - Form Detection & Autofill Orchestration
  * Entry point for the content script that runs on all pages
+ * Uses the Universal Autofill Engine for all DOM interactions
  */
 
 (function () {
@@ -77,9 +78,8 @@
     function checkForForms() {
         if (isProcessing) return;
 
-        // Find all form-like elements
-        const forms = document.querySelectorAll('form');
-        const inputs = document.querySelectorAll('input, select, textarea');
+        // Use universal selectors for detection
+        const inputs = document.querySelectorAll(FieldExtractor.FIELD_SELECTORS);
 
         // Count visible inputs
         const visibleInputs = Array.from(inputs).filter(el =>
@@ -87,13 +87,18 @@
             !['hidden', 'submit', 'button', 'reset'].includes(el.type?.toLowerCase())
         );
 
-        // Detect if this looks like a job application form
-        const hasForm = forms.length > 0;
+        // Detection logic
+        const forms = document.querySelectorAll('form, [role="form"], [role="main"]');
+        const hasForm = Array.from(forms).some(f => f.contains(visibleInputs[0]));
         const hasEnoughFields = visibleInputs.length >= MIN_FORM_FIELDS;
 
+        console.log(`[SmartJobAutofill] Detection: visibleInputs=${visibleInputs.length}, hasForm=${hasForm}, hasEnoughFields=${hasEnoughFields}`);
+
         if (hasForm || hasEnoughFields) {
-            console.log(`[SmartJobAutofill] Detected form with ${visibleInputs.length} fields`);
+            console.log(`[SmartJobAutofill] Detected application form. Starting processForm...`);
             processForm();
+        } else {
+            console.log('[SmartJobAutofill] No full form detected yet. Waiting for interaction or dynamic loading.');
         }
     }
 
@@ -105,7 +110,7 @@
         isProcessing = true;
 
         try {
-            // Phase 1: Extract all fields
+            // Phase 1: Extract all fields using universal detection
             console.log('[SmartJobAutofill] Phase 1: Extracting fields...');
             detectedFields = fieldExtractor.extractAllFields();
 
@@ -116,9 +121,17 @@
 
             // Phase 2: Deterministic matching
             console.log('[SmartJobAutofill] Phase 2: Deterministic matching...');
+            console.log('[SmartJobAutofill] Profile keys available:', Object.keys(profile));
             const matchedFields = deterministicMatcher.matchAllFields(detectedFields, profile);
 
-            // Phase 3: Fill high-confidence fields
+            // Detailed match results for debugging
+            matchedFields.forEach(f => {
+                if (f.matchConfidence > 0) {
+                    console.log(`[SmartJobAutofill] Match result for ${f.id}: score=${f.matchConfidence}, value=${!!f.matchedValue}, path=${f.matchedProfilePath}`);
+                }
+            });
+
+            // Phase 3: Fill high-confidence fields via universal autofill engine
             console.log('[SmartJobAutofill] Phase 3: Filling matched fields...');
             const filledCount = fillMatchedFields(matchedFields);
             console.log(`[SmartJobAutofill] Filled ${filledCount} fields deterministically`);
@@ -132,7 +145,6 @@
 
             if (unresolvedFields.length > 0) {
                 console.log(`[SmartJobAutofill] ${unresolvedFields.length} fields need LLM assistance`);
-                // Request LLM help in background (non-blocking)
                 requestLLMAssistance(unresolvedFields);
             }
 
@@ -152,6 +164,7 @@
 
     /**
      * Fill fields that have high confidence matches
+     * Uses the Universal Autofill Engine for all DOM writes
      * @param {Array} matchedFields - Fields with match results
      * @returns {number} Count of filled fields
      */
@@ -161,9 +174,10 @@
         matchedFields.forEach(field => {
             // Only auto-fill if confidence is high enough
             if (field.matchConfidence >= CONFIDENCE.HIGH && field.matchedValue) {
-                const success = fillField(field.element, field.matchedValue);
+                console.log(`[SmartJobAutofill] Auto-filling ${field.id} with "${field.matchedValue}" (Confidence: ${field.matchConfidence})`);
+                const result = autofillEngine.fill(field.element, field.matchedValue, field.type);
 
-                if (success) {
+                if (result.success) {
                     filledCount++;
                     field.isFilledByExtension = true;
 
@@ -206,91 +220,6 @@
     }
 
     /**
-     * Fill a single field with a value
-     * @param {HTMLElement} element - Form element
-     * @param {string} value - Value to fill
-     * @returns {boolean} Success status
-     */
-    function fillField(element, value) {
-        if (!element || !value) return false;
-
-        try {
-            const tagName = element.tagName.toLowerCase();
-
-            if (tagName === 'select') {
-                return fillSelectField(element, value);
-            }
-
-            if (element.type === 'checkbox' || element.type === 'radio') {
-                return fillCheckboxRadio(element, value);
-            }
-
-            // Regular text input
-            element.value = value;
-            element.dispatchEvent(new Event('input', { bubbles: true }));
-            element.dispatchEvent(new Event('change', { bubbles: true }));
-
-            return true;
-        } catch (error) {
-            console.error('[SmartJobAutofill] Error filling field:', error);
-            return false;
-        }
-    }
-
-    /**
-     * Fill a select dropdown
-     * @param {HTMLSelectElement} element - Select element
-     * @param {string} value - Value to select
-     * @returns {boolean} Success status
-     */
-    function fillSelectField(element, value) {
-        const normalizedValue = value.toLowerCase().trim();
-
-        // Try exact match
-        for (const option of element.options) {
-            if (option.value.toLowerCase() === normalizedValue ||
-                option.text.toLowerCase().trim() === normalizedValue) {
-                element.value = option.value;
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-            }
-        }
-
-        // Try partial match
-        for (const option of element.options) {
-            if (option.text.toLowerCase().includes(normalizedValue) ||
-                normalizedValue.includes(option.text.toLowerCase())) {
-                element.value = option.value;
-                element.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Fill checkbox or radio
-     * @param {HTMLElement} element - Input element
-     * @param {string} value - Value to match
-     * @returns {boolean} Success status
-     */
-    function fillCheckboxRadio(element, value) {
-        const normalizedValue = value.toLowerCase().trim();
-        const elementValue = (element.value || '').toLowerCase().trim();
-
-        if (elementValue === normalizedValue ||
-            normalizedValue === 'yes' ||
-            normalizedValue === 'true') {
-            element.checked = true;
-            element.dispatchEvent(new Event('change', { bubbles: true }));
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
      * Request LLM assistance for unresolved fields
      * @param {Array} fields - Unresolved fields
      */
@@ -312,7 +241,7 @@
                 type: MESSAGE_TYPES.LLM_BATCH_REQUEST,
                 data: {
                     fields: fieldData,
-                    profile: getMinimalProfile()
+                    profile: profile
                 }
             });
 
@@ -346,27 +275,30 @@
                 });
 
                 if (response && response.value) {
-                    fillField(field.element, response.value);
-                    field.isFilledByExtension = true;
+                    const result = autofillEngine.fill(field.element, response.value, field.type);
 
-                    sessionCache.set(field.id, {
-                        value: response.value,
-                        confidence: response.confidence || 0.8,
-                        source: FIELD_SOURCE.LLM,
-                        reason: 'LLM generated response'
-                    });
+                    if (result.success) {
+                        field.isFilledByExtension = true;
 
-                    inlineUI.addFieldIndicators(field.element, {
-                        fieldId: field.id,
-                        confidence: response.confidence || 0.8,
-                        source: FIELD_SOURCE.LLM,
-                        reason: 'LLM generated response',
-                        label: field.label,
-                        type: field.type,
-                        isLongForm: true
-                    });
+                        sessionCache.set(field.id, {
+                            value: response.value,
+                            confidence: response.confidence || 0.8,
+                            source: FIELD_SOURCE.LLM,
+                            reason: 'LLM generated response'
+                        });
 
-                    inlineUI.highlightField(field.element, 'inferred');
+                        inlineUI.addFieldIndicators(field.element, {
+                            fieldId: field.id,
+                            confidence: response.confidence || 0.8,
+                            source: FIELD_SOURCE.LLM,
+                            reason: 'LLM generated response',
+                            label: field.label,
+                            type: field.type,
+                            isLongForm: true
+                        });
+
+                        inlineUI.highlightField(field.element, 'inferred');
+                    }
                 }
             } catch (error) {
                 console.error('[SmartJobAutofill] Long-form generation failed:', error);
@@ -376,66 +308,44 @@
 
     /**
      * Apply LLM field mappings
-     * @param {Array} mappings - LLM mapping results
+     * Now the LLM returns actual values, not profile paths
+     * @param {Array} mappings - LLM mapping results with { fieldId, value, confidence, reason }
      * @param {Array} fields - Original fields
      */
     function applyLLMMappings(mappings, fields) {
         mappings.forEach(mapping => {
             const field = fields.find(f => f.id === mapping.fieldId);
-            if (!field) return;
+            if (!field || !mapping.value) return;
 
-            const value = getNestedValue(profile, mapping.profilePath);
-            if (!value) return;
+            const result = autofillEngine.fill(field.element, mapping.value, field.type);
 
-            fillField(field.element, value);
-            field.isFilledByExtension = true;
+            if (result.success) {
+                field.isFilledByExtension = true;
 
-            sessionCache.set(field.id, {
-                value: value,
-                confidence: mapping.confidence || 0.7,
-                source: FIELD_SOURCE.LLM,
-                reason: mapping.reason || 'LLM mapping',
-                profilePath: mapping.profilePath
-            });
+                sessionCache.set(field.id, {
+                    value: mapping.value,
+                    confidence: mapping.confidence || 0.7,
+                    source: FIELD_SOURCE.LLM,
+                    reason: mapping.reason || 'LLM mapping'
+                });
 
-            inlineUI.addFieldIndicators(field.element, {
-                fieldId: field.id,
-                confidence: mapping.confidence || 0.7,
-                source: FIELD_SOURCE.LLM,
-                reason: mapping.reason || 'LLM mapping',
-                profilePath: mapping.profilePath,
-                label: field.label,
-                type: field.type
-            });
+                inlineUI.addFieldIndicators(field.element, {
+                    fieldId: field.id,
+                    confidence: mapping.confidence || 0.7,
+                    source: FIELD_SOURCE.LLM,
+                    reason: mapping.reason || 'LLM mapping',
+                    label: field.label,
+                    type: field.type
+                });
 
-            inlineUI.highlightField(field.element, 'inferred');
+                inlineUI.highlightField(field.element, 'inferred');
+            }
         });
     }
 
     /**
-     * Get minimal profile for LLM (privacy-conscious)
-     */
-    function getMinimalProfile() {
-        if (!profile) return {};
-
-        return {
-            hasContact: !!(profile.contact?.email || profile.contact?.phone),
-            hasEducation: profile.education?.length > 0,
-            hasExperience: profile.experience?.length > 0,
-            skills: profile.skills?.slice(0, 10) || [],
-            educationSummary: profile.education?.[0] ? {
-                institution: profile.education[0].institution,
-                degree: profile.education[0].degree
-            } : null,
-            experienceSummary: profile.experience?.[0] ? {
-                company: profile.experience[0].company,
-                title: profile.experience[0].title
-            } : null
-        };
-    }
-
-    /**
      * Set up mutation observer for dynamic forms
+     * Now also detects ARIA/role-based elements
      */
     function setupFormObserver() {
         if (formObserver) {
@@ -450,8 +360,9 @@
                     if (mutation.addedNodes.length > 0) {
                         for (const node of mutation.addedNodes) {
                             if (node.nodeType === Node.ELEMENT_NODE) {
-                                if (node.matches?.('input, select, textarea') ||
-                                    node.querySelector?.('input, select, textarea')) {
+                                // Check for standard inputs AND ARIA/role-based elements
+                                if (node.matches?.(FieldExtractor.FIELD_SELECTORS) ||
+                                    node.querySelector?.(FieldExtractor.FIELD_SELECTORS)) {
                                     hasNewInputs = true;
                                     break;
                                 }

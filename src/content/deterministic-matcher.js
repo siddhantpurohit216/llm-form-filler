@@ -191,10 +191,12 @@ class DeterministicMatcher {
         let bestMatch = null;
         let bestScore = 0;
 
+        console.log(`[Matcher] SynonymMatch checking hints:`, hintWords);
+
         for (const [canonical, synonyms] of Object.entries(FIELD_SYNONYMS)) {
             for (const hint of hintWords) {
                 if (synonyms.includes(hint)) {
-                    const score = 0.85;
+                    const score = 0.9;
                     if (score > bestScore) {
                         bestScore = score;
                         bestMatch = canonical;
@@ -202,7 +204,7 @@ class DeterministicMatcher {
                 }
                 // Partial match
                 else if (synonyms.some(syn => hint.includes(syn) || syn.includes(hint))) {
-                    const score = 0.75;
+                    const score = 0.8;
                     if (score > bestScore) {
                         bestScore = score;
                         bestMatch = canonical;
@@ -230,6 +232,8 @@ class DeterministicMatcher {
             }
 
             const value = getNestedValue(profile, profilePath);
+            console.log(`[Matcher] Matched to: ${bestMatch} (${profilePath}), Value found: ${!!value}, Score: ${bestScore}`);
+
             if (value) {
                 return {
                     value: value,
