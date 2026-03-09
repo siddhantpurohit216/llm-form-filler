@@ -136,23 +136,15 @@
             const filledCount = fillMatchedFields(matchedFields);
             console.log(`[SmartJobAutofill] Filled ${filledCount} fields deterministically`);
 
-            // Phase 4: Identify unresolved fields for LLM
+            // Phase 4: Batch all unresolved fields into one LLM call
+            // Both low-confidence short-form AND long-form fields go in the same batch
             const unresolvedFields = matchedFields.filter(f =>
-                f.matchConfidence < CONFIDENCE.HIGH &&
-                !f.isFilledByExtension &&
-                !f.currentValue
+                !f.isFilledByExtension && !f.currentValue
             );
 
             if (unresolvedFields.length > 0) {
-                console.log(`[SmartJobAutofill] ${unresolvedFields.length} fields need LLM assistance`);
-                requestLLMAssistance(unresolvedFields);
-            }
-
-            // Phase 5: Handle long-form questions
-            const longFormFields = matchedFields.filter(f => f.isLongForm && !f.currentValue);
-            if (longFormFields.length > 0) {
-                console.log(`[SmartJobAutofill] ${longFormFields.length} long-form questions detected`);
-                requestLongFormGeneration(longFormFields);
+                console.log(`[SmartJobAutofill] Sending ${unresolvedFields.length} fields to LLM in a single batch...`);
+                requestLLMBatch(unresolvedFields);
             }
 
         } catch (error) {
@@ -220,10 +212,12 @@
     }
 
     /**
-     * Request LLM assistance for unresolved fields
-     * @param {Array} fields - Unresolved fields
+     * Request LLM assistance for ALL unresolved fields in a SINGLE batch call.
+     * This covers both low-confidence short-form fields and long-form text fields.
+     * Per-field AI generation (user prompt) is a separate opt-in via the ✨ button.
+     * @param {Array} fields - All unresolved fields
      */
-    async function requestLLMAssistance(fields) {
+    async function requestLLMBatch(fields) {
         if (fields.length === 0) return;
 
         try {
@@ -232,10 +226,13 @@
                 label: f.label,
                 placeholder: f.placeholder,
                 type: f.type,
+                isLongForm: !!f.isLongForm,
                 hints: f.allHints,
                 options: f.options,
                 constraints: f.constraints
             }));
+
+            console.log(`[SmartJobAutofill] Sending batch LLM request for ${fieldData.length} fields`);
 
             const response = await chrome.runtime.sendMessage({
                 type: MESSAGE_TYPES.LLM_BATCH_REQUEST,
@@ -246,63 +243,11 @@
             });
 
             if (response && response.mappings) {
+                console.log(`[SmartJobAutofill] LLM returned ${response.mappings.length} mappings`);
                 applyLLMMappings(response.mappings, fields);
             }
         } catch (error) {
-            console.error('[SmartJobAutofill] LLM request failed:', error);
-        }
-    }
-
-    /**
-     * Request long-form answer generation
-     * @param {Array} fields - Long-form fields
-     */
-    async function requestLongFormGeneration(fields) {
-        for (const field of fields) {
-            try {
-                const response = await chrome.runtime.sendMessage({
-                    type: MESSAGE_TYPES.LLM_GENERATE,
-                    data: {
-                        fieldId: field.id,
-                        fieldInfo: {
-                            label: field.label,
-                            placeholder: field.placeholder,
-                            type: field.type,
-                            maxLength: field.constraints.maxLength,
-                            hints: field.allHints.join(' ')
-                        }
-                    }
-                });
-
-                if (response && response.value) {
-                    const result = autofillEngine.fill(field.element, response.value, field.type);
-
-                    if (result.success) {
-                        field.isFilledByExtension = true;
-
-                        sessionCache.set(field.id, {
-                            value: response.value,
-                            confidence: response.confidence || 0.8,
-                            source: FIELD_SOURCE.LLM,
-                            reason: 'LLM generated response'
-                        });
-
-                        inlineUI.addFieldIndicators(field.element, {
-                            fieldId: field.id,
-                            confidence: response.confidence || 0.8,
-                            source: FIELD_SOURCE.LLM,
-                            reason: 'LLM generated response',
-                            label: field.label,
-                            type: field.type,
-                            isLongForm: true
-                        });
-
-                        inlineUI.highlightField(field.element, 'inferred');
-                    }
-                }
-            } catch (error) {
-                console.error('[SmartJobAutofill] Long-form generation failed:', error);
-            }
+            console.error('[SmartJobAutofill] LLM batch request failed:', error);
         }
     }
 
@@ -360,6 +305,14 @@
                     if (mutation.addedNodes.length > 0) {
                         for (const node of mutation.addedNodes) {
                             if (node.nodeType === Node.ELEMENT_NODE) {
+                                // Skip our own injected elements (sja-* classes or wrappers)
+                                if (node.classList?.contains('sja-field-wrapper') ||
+                                    node.classList?.contains('sja-confidence-indicator') ||
+                                    node.classList?.contains('sja-actions-container') ||
+                                    node.dataset?.sjaProcessed) {
+                                    continue;
+                                }
+
                                 // Check for standard inputs AND ARIA/role-based elements
                                 if (node.matches?.(FieldExtractor.FIELD_SELECTORS) ||
                                     node.querySelector?.(FieldExtractor.FIELD_SELECTORS)) {

@@ -30,6 +30,7 @@ Rules:
 - For yes/no fields, return "Yes" or "No"
 - For checkboxes, return "true" or "false"
 - Be precise with names, emails, phone numbers — use exact values from the profile
+- For fields with isLongForm=true (text areas for essays/cover letters/open questions), write a full, professional, multi-sentence response using the profile data as context
 - Never generate executable code
 - Return ONLY the JSON array, no other text`;
 

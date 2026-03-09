@@ -25,29 +25,83 @@ class InlineUI {
     }
 
     addFieldIndicators(element, matchData) {
-        if (element.dataset.sjaProcessed) return;
-        element.dataset.sjaProcessed = 'true';
-        element.dataset.sjaFieldId = matchData.fieldId || element.id;
+        try {
+            if (!element || !element.isConnected) return;
+            if (element.dataset.sjaProcessed) return;
+            element.dataset.sjaProcessed = 'true';
+            element.dataset.sjaFieldId = matchData.fieldId || element.id;
 
-        const wrapper = this.createFieldWrapper(element);
-        const indicator = this.createConfidenceIndicator(matchData);
-        wrapper.appendChild(indicator);
+            // Create a floating overlay anchored to the element's position
+            // NOTE: We NEVER move or wrap React's elements — we float independently
+            const overlay = this.createFloatingOverlay(element, matchData);
+            document.body.appendChild(overlay);
+            this.positionOverlay(overlay, element);
 
-        const actions = this.createActionButtons(element, matchData);
-        wrapper.appendChild(actions);
-        this.addTooltip(indicator, matchData);
-    }
+            // Reposition on scroll/resize
+            const reposition = () => {
+                if (!element.isConnected) {
+                    overlay.remove();
+                    window.removeEventListener('scroll', reposition, true);
+                    return;
+                }
+                this.positionOverlay(overlay, element);
+            };
+            window.addEventListener('scroll', reposition, true);
+            window.addEventListener('resize', reposition);
 
-    createFieldWrapper(element) {
-        if (element.parentElement?.classList.contains('sja-field-wrapper')) {
-            return element.parentElement;
+        } catch (e) {
+            // Silently skip — unexpected DOM state
         }
-        const wrapper = document.createElement('div');
-        wrapper.className = 'sja-field-wrapper';
-        element.parentNode.insertBefore(wrapper, element);
-        wrapper.appendChild(element);
-        return wrapper;
     }
+
+    /**
+     * Create a floating overlay that sits on top of the field without touching it
+     */
+    createFloatingOverlay(element, matchData) {
+        const overlay = document.createElement('div');
+        overlay.className = 'sja-field-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            z-index: 2147483647;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            pointer-events: none;
+        `;
+
+        const indicator = this.createConfidenceIndicator(matchData);
+        indicator.style.pointerEvents = 'auto';
+        overlay.appendChild(indicator);
+
+        const actions = this.createActionButtons(element, matchData, overlay);
+        overlay.appendChild(actions);
+        this.addTooltip(indicator, matchData);
+
+        // Show/hide action buttons on element focus/hover
+        element.addEventListener('focus', () => actions.style.display = 'flex');
+        element.addEventListener('blur', () => setTimeout(() => actions.style.display = 'none', 200));
+        element.addEventListener('mouseenter', () => actions.style.display = 'flex');
+        element.addEventListener('mouseleave', () => setTimeout(() => {
+            if (!actions.matches(':hover')) actions.style.display = 'none';
+        }, 200));
+        actions.addEventListener('mouseenter', () => actions.style.display = 'flex');
+        actions.addEventListener('mouseleave', () => actions.style.display = 'none');
+
+        return overlay;
+    }
+
+    positionOverlay(overlay, element) {
+        try {
+            const rect = element.getBoundingClientRect();
+            overlay.style.top = `${rect.top + window.scrollY + 4}px`;
+            overlay.style.left = `${rect.right + window.scrollX - 80}px`;
+            // Revert to fixed coords without scroll offset for fixed-position overlay
+            overlay.style.top = `${rect.top + 4}px`;
+            overlay.style.left = `${rect.right - 80}px`;
+        } catch (e) { /* ignore */ }
+    }
+
+    // REMOVED: createFieldWrapper — we no longer move/wrap elements
 
     createConfidenceIndicator(matchData) {
         const indicator = document.createElement('span');
@@ -61,10 +115,10 @@ class InlineUI {
         return indicator;
     }
 
-    createActionButtons(element, matchData) {
+    createActionButtons(element, matchData, overlay) {
         const container = document.createElement('div');
         container.className = 'sja-actions-container';
-        container.style.display = 'none';
+        container.style.cssText = 'display:none; pointer-events: auto;';
 
         // Edit button
         container.appendChild(this.createButton('✏️', 'Edit', () => {
@@ -89,12 +143,6 @@ class InlineUI {
             this.showSaveModal(element, matchData);
         }));
 
-        const wrapper = element.closest('.sja-field-wrapper');
-        if (wrapper) {
-            wrapper.addEventListener('mouseenter', () => container.style.display = 'flex');
-            wrapper.addEventListener('mouseleave', () => container.style.display = 'none');
-            element.addEventListener('focus', () => container.style.display = 'flex');
-        }
         return container;
     }
 
