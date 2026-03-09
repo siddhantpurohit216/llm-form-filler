@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "Smart Job Autofill",
+  "version": "1.0.0",
+  "description": "Intelligent, privacy-first job application autofill with optional LLM assistance",
+  "author": "Your Name",
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "48": "assets/icons/icon48.png"
+    },
+    "default_title": "Smart Job Autofill"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/utils/constants.js",
+        "src/utils/helpers.js",
+        "src/storage/session-cache.js",
+        "src/content/field-extractor.js",
+        "src/content/deterministic-matcher.js",
+        "src/content/inline-ui.js",
+        "src/content/content.js"
+      ],
+      "css": [
+        "styles/injected.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/*",
+        "lib/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+<!-- SVG Icon for Smart Job Autofill Extension -->
+<!-- Save this as icon.svg, then convert to PNG at 16x16, 48x48, and 128x128 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="100%" style="stop-color:#1d4ed8"/>
+    </linearGradient>
+  </defs>
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#bg)"/>
+  <!-- Document icon -->
+  <rect x="36" y="28" width="56" height="72" rx="4" fill="white"/>
+  <!-- Lines on document -->
+  <rect x="44" y="40" width="32" height="4" rx="2" fill="#3b82f6"/>
+  <rect x="44" y="52" width="40" height="4" rx="2" fill="#93c5fd"/>
+  <rect x="44" y="64" width="36" height="4" rx="2" fill="#93c5fd"/>
+  <rect x="44" y="76" width="28" height="4" rx="2" fill="#93c5fd"/>
+  <!-- Checkmark circle -->
+  <circle cx="80" cy="84" r="18" fill="#10b981"/>
+  <path d="M72 84 L78 90 L90 78" stroke="white" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

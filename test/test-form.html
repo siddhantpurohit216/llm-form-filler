@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Job Application Form</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f3f4f6;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            padding: 32px;
+        }
+
+        h1 {
+            font-size: 24px;
+            color: #1f2937;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            margin-bottom: 24px;
+        }
+
+        .section {
+            margin-bottom: 28px;
+        }
+
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .form-group {
+            flex: 1;
+        }
+
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #4b5563;
+            margin-bottom: 6px;
+        }
+
+        label .required {
+            color: #ef4444;
+        }
+
+        input,
+        select,
+        textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 120px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+
+        .btn:hover {
+            background: #2563eb;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🎯 Senior Software Engineer</h1>
+        <p class="subtitle">Acme Corp • San Francisco, CA (Remote)</p>
+
+        <form id="application-form">
+            <!-- Contact Information -->
+            <div class="section">
+                <h2 class="section-title">Contact Information</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="firstName">First Name <span class="required">*</span></label>
+                        <input type="text" id="firstName" name="firstName" required placeholder="John">
+                    </div>
+                    <div class="form-group">
+                        <label for="lastName">Last Name <span class="required">*</span></label>
+                        <input type="text" id="lastName" name="lastName" required placeholder="Doe">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="email">Email Address <span class="required">*</span></label>
+                    <input type="email" id="email" name="email" required placeholder="john.doe@example.com">
+                </div>
+                <div class="form-group">
+                    <label for="phone">Phone Number <span class="required">*</span></label>
+                    <input type="tel" id="phone" name="phone" required placeholder="+1 (555) 123-4567">
+                </div>
+            </div>
+
+            <!-- Links -->
+            <div class="section">
+                <h2 class="section-title">Professional Links</h2>
+                <div class="form-group">
+                    <label for="linkedin">LinkedIn Profile</label>
+                    <input type="url" id="linkedin" name="linkedin" placeholder="https://linkedin.com/in/johndoe">
+                </div>
+                <div class="form-group">
+                    <label for="github">GitHub Profile</label>
+                    <input type="url" id="github" name="github" placeholder="https://github.com/johndoe">
+                </div>
+                <div class="form-group">
+                    <label for="portfolio">Portfolio / Personal Website</label>
+                    <input type="url" id="portfolio" name="portfolio" placeholder="https://johndoe.dev">
+                </div>
+            </div>
+
+            <!-- Education -->
+            <div class="section">
+                <h2 class="section-title">Education</h2>
+                <div class="form-group">
+                    <label for="school">University / College <span class="required">*</span></label>
+                    <input type="text" id="school" name="school" required placeholder="Stanford University">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="degree">Degree</label>
+                        <select id="degree" name="degree">
+                            <option value="">Select degree...</option>
+                            <option value="bachelor">Bachelor's</option>
+                            <option value="master">Master's</option>
+                            <option value="phd">Ph.D.</option>
+                            <option value="associate">Associate's</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="major">Field of Study</label>
+                        <input type="text" id="major" name="major" placeholder="Computer Science">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="graduationYear">Graduation Year</label>
+                    <input type="text" id="graduationYear" name="graduationYear" placeholder="2020">
+                </div>
+            </div>
+
+            <!-- Experience -->
+            <div class="section">
+                <h2 class="section-title">Work Experience</h2>
+                <div class="form-group">
+                    <label for="currentCompany">Current/Most Recent Company</label>
+                    <input type="text" id="currentCompany" name="company" placeholder="Google">
+                </div>
+                <div class="form-group">
+                    <label for="jobTitle">Current/Most Recent Job Title</label>
+                    <input type="text" id="jobTitle" name="jobTitle" placeholder="Senior Software Engineer">
+                </div>
+                <div class="form-group">
+                    <label for="yearsExperience">Years of Experience</label>
+                    <select id="yearsExperience" name="yearsExperience">
+                        <option value="">Select...</option>
+                        <option value="0-1">Less than 1 year</option>
+                        <option value="1-3">1-3 years</option>
+                        <option value="3-5">3-5 years</option>
+                        <option value="5-10">5-10 years</option>
+                        <option value="10+">10+ years</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Long-form questions -->
+            <div class="section">
+                <h2 class="section-title">Application Questions</h2>
+                <div class="form-group">
+                    <label for="whyJoin">Why do you want to join Acme Corp? <span class="required">*</span></label>
+                    <textarea id="whyJoin" name="whyJoin" required
+                        placeholder="Tell us what excites you about this opportunity..." maxlength="500"></textarea>
+                    <p class="hint">Maximum 500 characters</p>
+                </div>
+                <div class="form-group">
+                    <label for="technicalChallenge">Describe a technical challenge you've overcome</label>
+                    <textarea id="technicalChallenge" name="technicalChallenge"
+                        placeholder="Share a specific example of a difficult problem you solved..."
+                        maxlength="1000"></textarea>
+                    <p class="hint">Maximum 1000 characters</p>
+                </div>
+            </div>
+
+            <!-- Additional Info -->
+            <div class="section">
+                <h2 class="section-title">Additional Information</h2>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="startDate">Available Start Date</label>
+                        <input type="date" id="startDate" name="startDate">
+                    </div>
+                    <div class="form-group">
+                        <label for="salary">Expected Salary (USD)</label>
+                        <input type="text" id="salary" name="salary" placeholder="$150,000">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="workAuth">Are you authorized to work in the United States?</label>
+                    <select id="workAuth" name="workAuth">
+                        <option value="">Select...</option>
+                        <option value="yes">Yes</option>
+                        <option value="no">No</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="sponsorship">Will you require visa sponsorship?</label>
+                    <select id="sponsorship" name="sponsorship">
+                        <option value="">Select...</option>
+                        <option value="yes">Yes</option>
+                        <option value="no">No</option>
+                    </select>
+                </div>
+            </div>
+
+            <button type="submit" class="btn">Submit Application</button>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('application-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            alert('Form submitted! (This is a test form)');
+        });
+    </script>
+</body>
+
+</html>
