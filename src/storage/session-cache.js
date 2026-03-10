@@ -99,19 +99,28 @@ class SessionCache {
      * @param {string} [source] - New source (defaults to 'user')
      */
     updateValue(fieldId, newValue, source = FIELD_SOURCE.USER) {
-        const entry = this.cache.get(fieldId);
-        if (entry) {
-            entry.value = newValue;
-            entry.source = source;
-            entry.confidence = source === FIELD_SOURCE.USER ? 1.0 : entry.confidence;
-            entry.timestamp = Date.now();
+        let entry = this.cache.get(fieldId);
 
-            // Update metadata
-            const meta = this.metadata.get(fieldId);
-            if (meta) {
-                meta.source = source;
-                meta.confidence = entry.confidence;
-            }
+        if (!entry) {
+            // Create a new entry if it doesn't exist
+            this.set(fieldId, {
+                value: newValue,
+                source: source,
+                confidence: source === FIELD_SOURCE.USER ? 1.0 : 0.5
+            });
+            return;
+        }
+
+        entry.value = newValue;
+        entry.source = source;
+        entry.confidence = source === FIELD_SOURCE.USER ? 1.0 : entry.confidence;
+        entry.timestamp = Date.now();
+
+        // Update metadata
+        const meta = this.metadata.get(fieldId);
+        if (meta) {
+            meta.source = source;
+            meta.confidence = entry.confidence;
         }
     }
 

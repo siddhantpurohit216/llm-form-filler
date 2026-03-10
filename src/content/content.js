@@ -44,6 +44,9 @@
         // Set up mutation observer for dynamic forms
         setupFormObserver();
 
+        // Set up global event delegation for manual user edits
+        setupInteractionDelegation();
+
         // Listen for messages from popup/background
         setupMessageListener();
 
@@ -139,14 +142,14 @@
             // Phase 4: Batch all unresolved fields into one LLM call
             // Both low-confidence short-form AND long-form fields go in the same batch
             const unresolvedFields = matchedFields.filter(f =>
-                !f.isFilledByExtension && !f.currentValue
+                !f.isFilledByExtension && !f.currentValue &&
+                sessionCache.get(f.id)?.source !== FIELD_SOURCE.USER
             );
 
             if (unresolvedFields.length > 0) {
                 console.log(`[SmartJobAutofill] Sending ${unresolvedFields.length} fields to LLM in a single batch...`);
                 requestLLMBatch(unresolvedFields);
             }
-
         } catch (error) {
             console.error('[SmartJobAutofill] Error processing form:', error);
         } finally {
@@ -164,6 +167,13 @@
         let filledCount = 0;
 
         matchedFields.forEach(field => {
+            // Check if field was manually edited by user
+            const cached = sessionCache.get(field.id);
+            if (cached && cached.source === FIELD_SOURCE.USER) {
+                console.log(`[SmartJobAutofill] Skipping user-edited field: ${field.id}`);
+                return;
+            }
+
             // Only auto-fill if confidence is high enough
             if (field.matchConfidence >= CONFIDENCE.HIGH && field.matchedValue) {
                 console.log(`[SmartJobAutofill] Auto-filling ${field.id} with "${field.matchedValue}" (Confidence: ${field.matchConfidence})`);
@@ -218,10 +228,16 @@
      * @param {Array} fields - All unresolved fields
      */
     async function requestLLMBatch(fields) {
-        if (fields.length === 0) return;
+        // Filter out fields that were already manually edited
+        const actualUnresolved = fields.filter(f => {
+            const cached = sessionCache.get(f.id);
+            return !(cached && cached.source === FIELD_SOURCE.USER);
+        });
+
+        if (actualUnresolved.length === 0) return;
 
         try {
-            const fieldData = fields.map(f => ({
+            const fieldData = actualUnresolved.map(f => ({
                 id: f.id,
                 label: f.label,
                 placeholder: f.placeholder,
@@ -287,6 +303,37 @@
             }
         });
     }
+
+    /**
+     * Set up global event delegation to detect manual user interaction
+     * This is more robust than per-element listeners on dynamic React sites
+     */
+    function setupInteractionDelegation() {
+        const handleInteraction = (e) => {
+            // event.isTrusted is true if triggered by user (keyboard/mouse)
+            // false if triggered by dispatchEvent (our autofill engine)
+            if (!e.isTrusted) return;
+
+            const el = e.target;
+            // Check if it's a form field we care about
+            if (!el.matches?.(FieldExtractor.FIELD_SELECTORS)) return;
+
+            // Calculate ID the same way FieldExtractor does
+            const fieldId = el.id || el.name || el.getAttribute('data-automation-id');
+
+            if (fieldId) {
+                console.log(`[SmartJobAutofill] Global delegation: Manual entry detected for ${fieldId}`);
+                sessionCache.updateValue(fieldId, el.value, FIELD_SOURCE.USER);
+            }
+        };
+
+        // Capture phase to ensure we get it before any page-level stoppers
+        document.addEventListener('input', handleInteraction, true);
+        document.addEventListener('change', handleInteraction, true);
+    }
+
+    // REMOVED: addInteractionListeners (replaced by global delegation)
+
 
     /**
      * Set up mutation observer for dynamic forms
