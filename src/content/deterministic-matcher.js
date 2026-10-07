@@ -17,6 +17,21 @@ class DeterministicMatcher {
      * @returns {Object} Match result with value and confidence
      */
     matchField(field, profile) {
+        const urlKind = globalThis.FieldPolicy?.urlKind(field);
+        if (urlKind) {
+            const value = profile.links?.[urlKind];
+            const valid = globalThis.FieldPolicy.validURL(value,urlKind);
+            return {value:valid ? value : null, confidence:valid ? 1 : 0, source:FIELD_SOURCE.DETERMINISTIC,
+                profilePath:`links.${urlKind}`,reason:'Exact URL field; use a saved link only'};
+        }
+        const questionCategory = globalThis.FieldPolicy?.category(field);
+        if (questionCategory === 'accuracy_declaration') {
+            return {value:null,confidence:0,source:FIELD_SOURCE.DETERMINISTIC,reason:'Review declaration after completing the application'};
+        }
+        if (['work_eligibility','disability'].includes(questionCategory) ||
+            (questionCategory === 'previous_employment' && field.type !== 'radio')) {
+            return {value:null,confidence:0,source:FIELD_SOURCE.DETERMINISTIC,reason:'Match the actual options to saved application preferences'};
+        }
         // Check for user override first (highest priority)
         if (this.userOverrides.has(field.id)) {
             const override = this.userOverrides.get(field.id);
@@ -28,6 +43,85 @@ class DeterministicMatcher {
                 reason: 'User-defined mapping'
             };
         }
+
+        if (field.element?.id === 'skills--skills') return {
+            value: profile.skills?.length ? profile.skills : null,
+            confidence: 1, source: FIELD_SOURCE.DETERMINISTIC,
+            profilePath: 'skills', reason: 'Skills from saved profile'
+        };
+
+        if (field.recordType) {
+            const prefix = {workExperience:'experience', education:'education', language:'languages'}[field.recordType];
+            const record = profile[prefix]?.[field.recordIndex];
+            const leaf = field.element.id.split('--').slice(1).join('--');
+            if (prefix === 'languages') {
+                const candidate = typeof record === 'string' ? {language:record} : record;
+                const language = candidate && (candidate.language || candidate.name) ? candidate : null;
+                const hint = `${field.label || ''} ${field.name || ''} ${leaf}`;
+                const ability = hint.match(/\b(overall|reading|writing|speaking|comprehension|listening)\b/i)?.[1]?.toLowerCase();
+                const key = leaf === 'language' ? 'language' : leaf === 'native' ? (/fluent/i.test(hint) ? 'fluent' : 'native') : ability;
+                let value = null;
+                if (language && key === 'language') value = language.language || language.name;
+                else if (language && key === 'fluent') value = language.fluent ?? /^(?:fluent|5\s*-\s*fluent)$/i.test(language.overall || language.proficiency || 'Fluent');
+                else if (language && key === 'native') value = language.native ?? false;
+                else if (language && ability) value = language[ability] || language.proficiency || 'Fluent';
+                return {value:value ?? null, confidence:value != null ? .95 : 0,
+                    source:FIELD_SOURCE.DETERMINISTIC, profilePath:`languages[${field.recordIndex}].${key || leaf}`,
+                    reason:'Saved language and proficiency preference'};
+            }
+            const keys = prefix === 'experience'
+                ? {jobTitle:'title', companyName:'company', location:'location', roleDescription:'description', currentlyWorkHere:'current'}
+                : {schoolName:'institution', degree:'degree', fieldOfStudy:'major', gradeAverage:'gpa'};
+            let value = record?.[keys[leaf]];
+            if (leaf.includes('dateSection')) {
+                const dateKey = /startDate|firstYearAttended/.test(leaf) ? 'startDate' : 'endDate';
+                const date = parseResumeDate(String(record?.[dateKey] || ''));
+                if (date) value = leaf.includes('Month')
+                    ? (/^\d{4}$/.test(String(record?.[dateKey] || '').trim()) ? null : String(Number(date.slice(5,7))))
+                    : date.slice(0,4);
+            }
+            // Never fall back to record zero for later repeated sections.
+            return {value: value ?? null, confidence: value != null ? .95 : 0,
+                source: FIELD_SOURCE.DETERMINISTIC, profilePath: `${prefix}[${field.recordIndex}].${keys[leaf] || leaf}`,
+                reason: 'Matching saved entry for this Workday section'};
+        }
+
+        // User-requested default applies only to previous employment, not to
+        // eligibility, consent, or other yes/no questions.
+        const previousWorker = field.name === 'candidateIsPreviousWorker' ||
+            (field.type === 'radio' && /(?:previously|ever).*(?:employed|worked)|(?:former|previous) employee/i.test(field.label || ''));
+        if (previousWorker) {
+            const answer = profile.applicationDefaults?.previouslyEmployed;
+            return {
+                value: answer === true || /^(yes|true)$/i.test(String(answer)) ? 'Yes' : 'No',
+                confidence: 1, source: FIELD_SOURCE.DETERMINISTIC,
+                profilePath: 'applicationDefaults.previouslyEmployed',
+                reason: 'Previous-employment default requested by user'
+            };
+        }
+
+        // Workday uses semantic IDs with section prefixes instead of simple names.
+        const workdayPaths = {
+            'name--legalName--firstName': 'contact.firstName',
+            'name--legalName--middleName': 'contact.middleName',
+            'name--legalName--lastName': 'contact.lastName',
+            'address--addressLine1': 'contact.address',
+            'address--addressLine2': 'contact.addressLine2',
+            'address--addressLine3': 'contact.addressLine3',
+            'address--city': 'contact.city',
+            'address--postalCode': 'contact.zipCode',
+            'address--countryRegion': 'contact.state',
+            'country--country': 'contact.country',
+            'phoneNumber--phoneNumber': 'contact.phone',
+            'phoneNumber--phoneType': 'contact.phoneType'
+        };
+        const workdayPath = workdayPaths[field.element?.id];
+        const workdayValue = workdayPath && getNestedValue(profile, workdayPath);
+        if (workdayValue) return {
+            value: workdayValue, confidence: 0.95,
+            source: FIELD_SOURCE.DETERMINISTIC, profilePath: workdayPath,
+            reason: 'Workday field match'
+        };
 
         // Try matching strategies in order of confidence
         const strategies = [
@@ -42,6 +136,30 @@ class DeterministicMatcher {
             const result = strategy(field, profile);
             if (result && result.confidence >= CONFIDENCE.LOW) {
                 return result;
+            }
+        }
+
+        // Custom fields fallback — user-defined label/value pairs
+        const customFields = profile.customFields || {};
+        for (const [label, value] of Object.entries(customFields)) {
+            if (!label || !value) continue;
+            const normalizedLabel = normalizeFieldName(label);
+            const matchedHint = field.normalizedHints?.find(hint =>
+                hint && (
+                    hint === normalizedLabel ||
+                    hint.includes(normalizedLabel) ||
+                    normalizedLabel.includes(hint) ||
+                    stringSimilarity(hint, normalizedLabel) >= 0.6
+                )
+            );
+            if (matchedHint) {
+                return {
+                    value: String(value),
+                    confidence: 0.75,
+                    source: FIELD_SOURCE.DETERMINISTIC,
+                    profilePath: `customFields.${label}`,
+                    reason: `Custom field match: ${label}`
+                };
             }
         }
 

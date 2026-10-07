@@ -21,6 +21,21 @@
     let detectedFields = [];
     let isProcessing = false;
     let formObserver = null;
+    let rescanPending = false;
+    let skillAttempts = new WeakMap();
+    let dropdownAttempts = new WeakMap();
+    const aiAttempts = new WeakMap();
+    const elementIds = new WeakMap();
+    let nextElementId = 0;
+    let lastFormSnapshot = null;
+
+    function formSnapshot(elements) {
+        return JSON.stringify(Array.from(elements).filter(el => !fieldExtractor.shouldSkipField(el)).map(el => {
+            if (!elementIds.has(el)) elementIds.set(el, ++nextElementId);
+            return [elementIds.get(el), el.id, fieldExtractor.getCurrentValue(el), el.checked,
+                el.getAttribute?.('aria-invalid'), el.getAttribute?.('aria-describedby')];
+        }));
+    }
 
     /**
      * Initialize the content script
@@ -30,6 +45,16 @@
 
         // Initialize inline UI
         inlineUI.init();
+        inlineUI.showPageStatus('Looking for application fields…', async () => {
+            skillAttempts = new WeakMap();
+            dropdownAttempts = new WeakMap();
+            await loadProfile();
+            await processForm({manual:true});
+        });
+        // Install listeners before awaiting storage so early SPA updates aren't lost.
+        setupFormObserver();
+        setupInteractionDelegation();
+        setupMessageListener();
 
         // Load user profile from background
         await loadProfile();
@@ -41,15 +66,6 @@
             window.addEventListener('load', checkForForms);
         }
 
-        // Set up mutation observer for dynamic forms
-        setupFormObserver();
-
-        // Set up global event delegation for manual user edits
-        setupInteractionDelegation();
-
-        // Listen for messages from popup/background
-        setupMessageListener();
-
         console.log('[SmartJobAutofill] Initialization complete');
     }
 
@@ -57,6 +73,7 @@
      * Load user profile from background/storage
      */
     async function loadProfile() {
+        lastFormSnapshot = null;
         try {
             const response = await chrome.runtime.sendMessage({
                 type: MESSAGE_TYPES.GET_PROFILE
@@ -79,16 +96,17 @@
      * Check page for job application forms
      */
     function checkForForms() {
-        if (isProcessing) return;
+        if (isProcessing) { rescanPending = true; return; }
 
         // Use universal selectors for detection
         const inputs = document.querySelectorAll(FieldExtractor.FIELD_SELECTORS);
 
         // Count visible inputs
         const visibleInputs = Array.from(inputs).filter(el =>
-            isElementVisible(el) &&
-            !['hidden', 'submit', 'button', 'reset'].includes(el.type?.toLowerCase())
+            !fieldExtractor.shouldSkipField(el)
         );
+        const snapshot = formSnapshot(visibleInputs);
+        if (snapshot === lastFormSnapshot) return;
 
         // Detection logic
         const forms = document.querySelectorAll('form, [role="form"], [role="main"]');
@@ -101,31 +119,65 @@
             console.log(`[SmartJobAutofill] Detected application form. Starting processForm...`);
             processForm();
         } else {
-            console.log('[SmartJobAutofill] No full form detected yet. Waiting for interaction or dynamic loading.');
+            lastFormSnapshot = snapshot;
+            detectedFields = [];
+            inlineUI.updatePageStatus('No editable fields yet. Open the application form.');
         }
     }
 
     /**
      * Process detected form - main autofill pipeline
      */
-    async function processForm() {
+    async function processForm({manual = false} = {}) {
         if (isProcessing) return;
+        if (!profile) return;
         isProcessing = true;
+        inlineUI.updatePageStatus('Checking application fields…', true);
 
         try {
+            const sectionIssues = await autofillEngine.ensureProfileSections?.(profile, {manual}) || [];
             // Phase 1: Extract all fields using universal detection
             console.log('[SmartJobAutofill] Phase 1: Extracting fields...');
             detectedFields = fieldExtractor.extractAllFields();
 
             if (detectedFields.length === 0) {
-                console.log('[SmartJobAutofill] No fields to process');
+                inlineUI.updatePageStatus('No editable fields on this step.');
                 return;
+            }
+
+            // Repair the formatting of an existing Workday phone value too,
+            // so a number rejected on the previous attempt can be corrected.
+            for (const field of detectedFields) {
+                if (manual && field.type === 'url' && field.currentValue && !globalThis.FieldPolicy?.validURL(field.currentValue,globalThis.FieldPolicy.urlKind(field))) {
+                    await autofillEngine.fill(field.element,'','url');
+                    field.currentValue = '';
+                    sessionCache.remove?.(field.id);
+                }
+                if (manual && autofillEngine.needsValueCommit?.(field.element, field.currentValue)) {
+                    // Recommit the displayed answer, including user edits, rather
+                    // than replacing it with a potentially different profile value.
+                    await autofillEngine.fill(field.element, field.currentValue, field.type);
+                }
+                if (field.element.id !== 'phoneNumber--phoneNumber' || !field.currentValue) continue;
+                const normalized = autofillEngine.normalizePhoneValue(field.element, field.currentValue);
+                if (normalized !== field.currentValue) {
+                    const result = await autofillEngine.fill(field.element, normalized, field.type);
+                    if (result.success) field.currentValue = normalized;
+                }
             }
 
             // Phase 2: Deterministic matching
             console.log('[SmartJobAutofill] Phase 2: Deterministic matching...');
             console.log('[SmartJobAutofill] Profile keys available:', Object.keys(profile));
             const matchedFields = deterministicMatcher.matchAllFields(detectedFields, profile);
+
+            // Controls are available for unanswered fields too, allowing users
+            // to save a manual answer without needing an AI/profile match first.
+            matchedFields.forEach(field => inlineUI.addFieldIndicators(field.element, {
+                fieldId:field.id, label:field.label, type:field.type, isLongForm:field.isLongForm,
+                confidence:field.matchConfidence, source:field.matchSource,
+                reason:field.matchReason, profilePath:field.matchedProfilePath
+            }));
 
             // Detailed match results for debugging
             matchedFields.forEach(f => {
@@ -136,24 +188,49 @@
 
             // Phase 3: Fill high-confidence fields via universal autofill engine
             console.log('[SmartJobAutofill] Phase 3: Filling matched fields...');
-            const filledCount = fillMatchedFields(matchedFields);
+            const fillSummary = await fillMatchedFields(matchedFields, {manual});
+            const filledCount = fillSummary.count;
             console.log(`[SmartJobAutofill] Filled ${filledCount} fields deterministically`);
 
             // Phase 4: Batch all unresolved fields into one LLM call
             // Both low-confidence short-form AND long-form fields go in the same batch
             const unresolvedFields = matchedFields.filter(f =>
-                !f.isFilledByExtension && !f.currentValue &&
+                f.type !== 'url' && globalThis.FieldPolicy?.category(f) !== 'accuracy_declaration' &&
+                !(f.recordType && /dateSection/.test(f.element.id || '')) &&
+                f.type !== 'skills' && !f.isFilledByExtension && !fieldExtractor.getCurrentValue(f.element) &&
+                !(f.matchConfidence >= CONFIDENCE.HIGH && f.matchedValue != null && f.matchedValue !== '') &&
                 sessionCache.get(f.id)?.source !== FIELD_SOURCE.USER
             );
 
+            let aiNote = '';
             if (unresolvedFields.length > 0) {
-                console.log(`[SmartJobAutofill] Sending ${unresolvedFields.length} fields to LLM in a single batch...`);
-                requestLLMBatch(unresolvedFields);
+                aiNote = manual
+                    ? await requestLLMBatch(unresolvedFields)
+                    : 'Click Autofill for AI assistance';
             }
+            const skillsField = detectedFields.find(field => field.type === 'skills');
+            const skillStatus = skillsField
+                ? ` · ${profile.skills?.length || 0} saved skills / ${autofillEngine.selectedLabels(skillsField.element).length} selected`
+                : '';
+            const filledTotal = matchedFields.filter(field => {
+                const cached = sessionCache.get(field.id);
+                return cached && cached.source !== FIELD_SOURCE.USER && fieldExtractor.getCurrentValue(field.element);
+            }).length;
+            const manualSkills = skillsField && !manual && sessionCache.get(skillsField.id)?.source === FIELD_SOURCE.USER;
+            inlineUI.updatePageStatus(`${detectedFields.length} fields detected · ${filledTotal} filled from profile${skillStatus}${manualSkills ? ' · Click Autofill to add missing saved skills' : ''}${fillSummary.missingSkills.length ? ` · ${fillSummary.missingSkills.length} skills need review` : ''}${fillSummary.failedDropdowns.length ? ` · Check ${fillSummary.failedDropdowns.join(', ')}` : ''}${sectionIssues.length ? ` · ${sectionIssues.join(', ')}` : ''}${aiNote ? ` · ${aiNote}` : ''}`);
         } catch (error) {
+            inlineUI.updatePageStatus('Autofill failed. Reload the extension and page.');
             console.error('[SmartJobAutofill] Error processing form:', error);
         } finally {
+            // Use only the nodes we actually processed. A new/replaced field that
+            // arrived during an async fill must still trigger the pending scan.
+            lastFormSnapshot = formSnapshot(detectedFields.map(field => field.element).filter(el => el.isConnected));
             isProcessing = false;
+            inlineUI.setPageBusy(false);
+            if (rescanPending) {
+                rescanPending = false;
+                checkForForms();
+            }
         }
     }
 
@@ -163,22 +240,54 @@
      * @param {Array} matchedFields - Fields with match results
      * @returns {number} Count of filled fields
      */
-    function fillMatchedFields(matchedFields) {
+    async function fillMatchedFields(matchedFields, {manual = false} = {}) {
         let filledCount = 0;
+        const missingSkills = [];
+        const failedDropdowns = [];
 
-        matchedFields.forEach(field => {
+        for (const field of matchedFields) {
+            const repairDate = manual && autofillEngine.needsDateCommit?.(field.element, field.matchedValue);
             // Check if field was manually edited by user
             const cached = sessionCache.get(field.id);
-            if (cached && cached.source === FIELD_SOURCE.USER) {
+            if (cached && cached.source === FIELD_SOURCE.USER && !(manual && field.type === 'skills') && !repairDate) {
                 console.log(`[SmartJobAutofill] Skipping user-edited field: ${field.id}`);
-                return;
+                continue;
+            }
+            // Preserve values entered by the user or Workday's resume import.
+            if (!field.element.isConnected || field.element.disabled || field.element.readOnly) continue;
+            if (field.type === 'skills') {
+                const signature = JSON.stringify(field.matchedValue);
+                const attempt = skillAttempts.get(field.element);
+                if (attempt?.signature === signature) {
+                    missingSkills.push(...(attempt.result?.missing || []));
+                    continue;
+                }
+                skillAttempts.set(field.element, {signature});
+            } else if (fieldExtractor.getCurrentValue(field.element) && !repairDate) continue;
+
+            if (['combobox', 'dropdown'].includes(field.type) && field.matchedValue != null) {
+                const signature = JSON.stringify(field.matchedValue);
+                const attempt = dropdownAttempts.get(field.element);
+                if (attempt?.signature === signature) {
+                    if (!attempt.result?.success) failedDropdowns.push(field.label || field.name);
+                    continue;
+                }
+                dropdownAttempts.set(field.element, {signature});
             }
 
             // Only auto-fill if confidence is high enough
-            if (field.matchConfidence >= CONFIDENCE.HIGH && field.matchedValue) {
+            if (field.matchConfidence >= CONFIDENCE.HIGH && field.matchedValue != null && field.matchedValue !== '') {
                 console.log(`[SmartJobAutofill] Auto-filling ${field.id} with "${field.matchedValue}" (Confidence: ${field.matchConfidence})`);
-                const result = autofillEngine.fill(field.element, field.matchedValue, field.type);
+                const result = await autofillEngine.fill(field.element, field.matchedValue, field.type);
 
+                if (['combobox', 'dropdown'].includes(field.type)) {
+                    dropdownAttempts.get(field.element).result = result;
+                    if (!result.success) failedDropdowns.push(field.label || field.name);
+                }
+                if (field.type === 'skills') {
+                    skillAttempts.get(field.element).result = result;
+                    missingSkills.push(...(result.missing || []));
+                }
                 if (result.success) {
                     filledCount++;
                     field.isFilledByExtension = true;
@@ -216,9 +325,9 @@
                     profilePath: field.matchedProfilePath
                 });
             }
-        });
+        }
 
-        return filledCount;
+        return {count:filledCount, missingSkills, failedDropdowns};
     }
 
     /**
@@ -228,13 +337,37 @@
      * @param {Array} fields - All unresolved fields
      */
     async function requestLLMBatch(fields) {
+        const missingPreferences = new Set();
+        fields = fields.filter(field => {
+            const category = globalThis.FieldPolicy?.category(field);
+            if (['work_eligibility','previous_employment','disability'].includes(category) && globalThis.FieldPolicy.preference(category,profile) == null) {
+                missingPreferences.add({work_eligibility:'work eligibility',previous_employment:'previous employment',disability:'disability disclosure'}[category]);
+                return false;
+            }
+            return true;
+        });
+        const preferenceNote = missingPreferences.size ? `Save Profile → Application preferences: ${[...missingPreferences].join(', ')}` : '';
+        const withPreferences = note => [preferenceNote,note].filter(Boolean).join(' · ');
+        for (const field of fields) {
+            if (autofillEngine.captureFieldOptions) {
+                field.optionDetails = await autofillEngine.captureFieldOptions(field);
+                field.options = field.optionDetails.map(option=>option.label);
+            }
+        }
         // Filter out fields that were already manually edited
+        const profileSignature = JSON.stringify(profile);
+        let previousNote = '';
         const actualUnresolved = fields.filter(f => {
+            const attempt = aiAttempts.get(f.element);
+            if (attempt?.profileSignature === profileSignature && attempt.fieldSignature === JSON.stringify([f.label,f.type,f.options,f.optionDetails]) && Date.now() < attempt.retryAt) {
+                previousNote = attempt.note;
+                return false;
+            }
             const cached = sessionCache.get(f.id);
             return !(cached && cached.source === FIELD_SOURCE.USER);
         });
 
-        if (actualUnresolved.length === 0) return;
+        if (actualUnresolved.length === 0) return withPreferences(previousNote);
 
         try {
             const fieldData = actualUnresolved.map(f => ({
@@ -245,6 +378,9 @@
                 isLongForm: !!f.isLongForm,
                 hints: f.allHints,
                 options: f.options,
+                optionDetails:f.optionDetails,
+                context:String(f.nearbyText || '').slice(0,400),
+                category:globalThis.FieldPolicy?.category(f),
                 constraints: f.constraints
             }));
 
@@ -258,12 +394,21 @@
                 }
             });
 
+            const note = response?.error ? `AI unavailable: ${response.error}` :
+                !response?.mappings?.length ? 'Remaining questions need a saved answer or manual review' : '';
+            const retryAt = response?.error ? Date.now() + (response.retryAfterMs || 60000) : Infinity;
+            actualUnresolved.forEach(field => aiAttempts.set(field.element, {profileSignature, fieldSignature:JSON.stringify([field.label,field.type,field.options,field.optionDetails]), note, retryAt}));
+            if (response?.error) return withPreferences(note);
             if (response && response.mappings) {
                 console.log(`[SmartJobAutofill] LLM returned ${response.mappings.length} mappings`);
-                applyLLMMappings(response.mappings, fields);
+                await applyLLMMappings(response.mappings, fields);
+                if (!response.mappings.length) return withPreferences(note);
             }
+            return withPreferences('');
         } catch (error) {
             console.error('[SmartJobAutofill] LLM batch request failed:', error);
+            actualUnresolved.forEach(field => aiAttempts.set(field.element, {profileSignature, fieldSignature:JSON.stringify([field.label,field.type,field.options,field.optionDetails]), note:'AI request failed', retryAt:Date.now()+60000}));
+            return withPreferences('AI request failed');
         }
     }
 
@@ -273,12 +418,16 @@
      * @param {Array} mappings - LLM mapping results with { fieldId, value, confidence, reason }
      * @param {Array} fields - Original fields
      */
-    function applyLLMMappings(mappings, fields) {
-        mappings.forEach(mapping => {
+    async function applyLLMMappings(mappings, fields) {
+        for (const mapping of mappings) {
             const field = fields.find(f => f.id === mapping.fieldId);
-            if (!field || !mapping.value) return;
+            if (!field || mapping.value == null || mapping.value === '' || !field.element.isConnected) continue;
+            if (globalThis.FieldPolicy && !globalThis.FieldPolicy.validate(field,mapping,profile)) continue;
+            if (fieldExtractor.getCurrentValue(field.element) || sessionCache.get(field.id)?.source === FIELD_SOURCE.USER) continue;
 
-            const result = autofillEngine.fill(field.element, mapping.value, field.type);
+            const option = field.optionDetails?.find(option=>String(option.value) === String(mapping.value) || option.label === String(mapping.value));
+            const fillValue = field.element.tagName !== 'SELECT' && field.type !== 'radio' && option ? option.label : mapping.value;
+            const result = await autofillEngine.fill(field.element, fillValue, field.type);
 
             if (result.success) {
                 field.isFilledByExtension = true;
@@ -301,7 +450,7 @@
 
                 inlineUI.highlightField(field.element, 'inferred');
             }
-        });
+        }
     }
 
     /**
@@ -319,7 +468,7 @@
             if (!el.matches?.(FieldExtractor.FIELD_SELECTORS)) return;
 
             // Calculate ID the same way FieldExtractor does
-            const fieldId = el.id || el.name || el.getAttribute('data-automation-id');
+            const fieldId = el.dataset.sjaFieldId;
 
             if (fieldId) {
                 console.log(`[SmartJobAutofill] Global delegation: Manual entry detected for ${fieldId}`);
@@ -344,44 +493,35 @@
             formObserver.disconnect();
         }
 
-        formObserver = new MutationObserver(
-            debounce((mutations) => {
-                let hasNewInputs = false;
-
-                for (const mutation of mutations) {
-                    if (mutation.addedNodes.length > 0) {
-                        for (const node of mutation.addedNodes) {
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                // Skip our own injected elements (sja-* classes or wrappers)
-                                if (node.classList?.contains('sja-field-wrapper') ||
-                                    node.classList?.contains('sja-confidence-indicator') ||
-                                    node.classList?.contains('sja-actions-container') ||
-                                    node.dataset?.sjaProcessed) {
-                                    continue;
-                                }
-
-                                // Check for standard inputs AND ARIA/role-based elements
-                                if (node.matches?.(FieldExtractor.FIELD_SELECTORS) ||
-                                    node.querySelector?.(FieldExtractor.FIELD_SELECTORS)) {
-                                    hasNewInputs = true;
-                                    break;
-                                }
-                            }
-                        }
+        const scheduleScan = debounce(checkForForms, 250);
+        formObserver = new MutationObserver(mutations => {
+            // Filter before debouncing: unrelated later mutations must not discard
+            // the batch that inserted the application inputs.
+            const relevant = mutations.some(mutation => {
+                if (mutation.target.closest?.('[data-sja-ui], .sja-field-overlay')) return false;
+                if (mutation.type === 'attributes') {
+                    if (mutation.attributeName === 'class') {
+                        const pageClasses = value => String(value || '').split(/\s+/).filter(token => token && !token.startsWith('sja-')).sort().join(' ');
+                        if (pageClasses(mutation.oldValue) === pageClasses(mutation.target.getAttribute('class'))) return false;
                     }
-                    if (hasNewInputs) break;
+                    return mutation.target.matches?.(FieldExtractor.FIELD_SELECTORS) ||
+                        mutation.target.querySelector?.(FieldExtractor.FIELD_SELECTORS);
                 }
-
-                if (hasNewInputs) {
-                    console.log('[SmartJobAutofill] New form elements detected');
-                    checkForForms();
-                }
-            }, 500)
-        );
-
+                return [...mutation.addedNodes, ...mutation.removedNodes].some(node =>
+                    node.nodeType === Node.ELEMENT_NODE &&
+                    !node.matches?.('[data-sja-ui], .sja-field-overlay') &&
+                    (node.matches?.(FieldExtractor.FIELD_SELECTORS) ||
+                        node.querySelector?.(FieldExtractor.FIELD_SELECTORS))
+                );
+            });
+            if (relevant) scheduleScan();
+        });
         formObserver.observe(document.body, {
             childList: true,
-            subtree: true
+            subtree: true,
+            attributes: true,
+            attributeOldValue: true,
+            attributeFilter: ['hidden', 'style', 'class', 'disabled', 'readonly']
         });
     }
 
@@ -392,8 +532,10 @@
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             switch (message.type) {
                 case 'TRIGGER_AUTOFILL':
-                    loadProfile().then(() => processForm());
-                    sendResponse({ success: true });
+                    skillAttempts = new WeakMap();
+                    dropdownAttempts = new WeakMap();
+                    loadProfile().then(() => processForm({manual:true})).then(() =>
+                        sendResponse({ success: true, fieldCount: detectedFields.length }));
                     break;
 
                 case 'GET_FORM_STATUS':
@@ -405,7 +547,7 @@
                     break;
 
                 case 'PROFILE_UPDATED':
-                    loadProfile();
+                    loadProfile().then(checkForForms);
                     sendResponse({ success: true });
                     break;
 

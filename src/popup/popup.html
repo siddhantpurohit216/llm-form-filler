@@ -12,17 +12,21 @@
   <div class="popup-container">
     <!-- Header -->
     <header class="popup-header">
-      <h1>🎯 Smart Job Autofill</h1>
+      <div class="popup-brand"><span class="brand-mark" aria-hidden="true">✓</span><div><h1>Smart Job Autofill</h1><p>Your answers, ready to go.</p></div></div>
       <span class="version">v1.0.0</span>
     </header>
 
     <!-- Tabs -->
-    <nav class="tabs">
+    <nav class="tabs" aria-label="Extension sections">
       <button class="tab-btn active" data-tab="profile">Profile</button>
       <button class="tab-btn" data-tab="resume">Resume</button>
       <button class="tab-btn" data-tab="settings">Settings</button>
     </nav>
 
+    <section class="page-actions" aria-label="Current page">
+      <div><span class="eyebrow">CURRENT PAGE</span><p id="page-summary">Checking application…</p></div>
+      <button type="button" class="btn btn-primary" id="popup-autofill">Autofill</button>
+    </section>
     <!-- Tab Content -->
     <main class="tab-content">
       <!-- Profile Tab -->
@@ -78,6 +82,13 @@
         </div>
 
         <div class="section">
+          <h2>Languages</h2>
+          <p class="description">Add languages you speak. Proficiency defaults to Fluent; adjust each ability as needed.</p>
+          <div id="languages-list" class="item-list"></div>
+          <button class="btn btn-secondary btn-add" id="add-language">+ Add Language</button>
+        </div>
+
+        <div class="section">
           <h2>Skills</h2>
           <div class="form-group">
             <input type="text" id="skills-input" placeholder="Type skill and press Enter">
@@ -85,8 +96,24 @@
           <div id="skills-list" class="tags-container"></div>
         </div>
 
+        <div class="section">
+          <h2>Application preferences</h2>
+          <div class="form-group"><label for="application-country">Country for this application</label><input id="application-country" placeholder="e.g. India"></div>
+          <div class="form-group"><label for="work-eligibility">Legally eligible to work in this country</label><select id="work-eligibility"><option value="">Answer manually</option><option>Yes</option><option>No</option></select></div>
+          <div class="form-group"><label for="previous-employment">Previously employed by this company</label><select id="previous-employment"><option>No</option><option>Yes</option></select></div>
+          <div class="form-group"><label for="disability-answer">Disability disclosure</label><select id="disability-answer"><option value="">Answer manually</option><option>No</option><option>Yes</option><option>Prefer not to say</option></select></div>
+          <p class="description">Update the country and previous-employment answer for each application. Accuracy declarations remain for your review.</p>
+        </div>
+
+        <div class="section">
+          <h2>Custom Fields</h2>
+          <p class="description">Add any extra fields (e.g. visa status, salary expectation) for autofill.</p>
+          <div id="custom-fields-list" class="custom-fields-container"></div>
+          <button class="btn btn-secondary btn-add" id="add-custom-field">+ Add Field</button>
+        </div>
+
         <div class="actions">
-          <button class="btn btn-primary" id="save-profile">💾 Save Profile</button>
+          <button class="btn btn-primary" id="save-profile">Save profile</button>
         </div>
       </section>
 
@@ -107,6 +134,9 @@
           <div id="upload-status" class="upload-status hidden">
             <div class="status-icon"></div>
             <span class="status-text"></span>
+          </div>
+          <div id="retry-resume-area" class="hidden" style="margin-top:10px; text-align:center;">
+            <button class="btn btn-secondary" id="retry-resume-btn">🔄 Upload Resume Again</button>
           </div>
         </div>
 
@@ -238,11 +268,11 @@
       <div class="form-row">
         <div class="form-group">
           <label>Start Date</label>
-          <input type="month" class="edu-start">
+          <input type="text" class="edu-start" placeholder="YYYY-MM or YYYY; optional">
         </div>
         <div class="form-group">
           <label>End Date</label>
-          <input type="month" class="edu-end">
+          <input type="text" class="edu-end" placeholder="YYYY-MM or YYYY; optional">
         </div>
       </div>
     </div>
@@ -268,12 +298,15 @@
       <div class="form-row">
         <div class="form-group">
           <label>Start Date</label>
-          <input type="month" class="exp-start">
+          <input type="text" class="exp-start" placeholder="YYYY-MM or YYYY; optional">
         </div>
         <div class="form-group">
           <label>End Date</label>
-          <input type="month" class="exp-end">
+          <input type="text" class="exp-end" placeholder="YYYY-MM or YYYY; optional">
         </div>
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" class="exp-current"> I currently work here</label>
       </div>
       <div class="form-group">
         <label>Description</label>
@@ -284,6 +317,8 @@
 
   <script src="../../lib/pdf.min.js"></script>
   <script src="../../lib/mammoth.browser.min.js"></script>
+  <script src="../utils/resume-profile.js"></script>
+  <script src="../utils/field-policy.js"></script>
   <script src="popup.js"></script>
 </body>
 

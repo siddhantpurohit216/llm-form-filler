@@ -4,6 +4,8 @@
  */
 
 import { LLMOrchestrator } from '../llm/orchestrator.js';
+import '../utils/resume-profile.js';
+import '../utils/field-policy.js';
 
 // Initialize LLM orchestrator
 const llmOrchestrator = new LLMOrchestrator();
@@ -300,7 +302,7 @@ async function handleLLMBatchRequest(data) {
         return { mappings };
     } catch (error) {
         console.error('[Background] LLM batch request failed:', error);
-        return { mappings: [], error: error.message };
+        return { mappings: [], error: error.message, retryAfterMs:error.retryAfterMs || 0 };
     }
 }
 
@@ -367,7 +369,7 @@ async function handleResumeUpload(data) {
                 data.text,
                 settings
             );
-            return { success: true, data: structuredData };
+            return { success: true, data: ResumeProfile.profile(structuredData) };
         }
 
         return { success: false, error: 'No API key or text provided' };

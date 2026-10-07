@@ -8,6 +8,50 @@ class AutofillEngine {
         this.fillLog = new Map();
         this.optionWaitTimeout = 2000; // ms to wait for dropdown options
         this.optionPollInterval = 100; // ms between polls
+        this.sectionFailures = new WeakMap();
+    }
+
+    async ensureProfileSections(profile, {manual = false} = {}) {
+        const issues = [];
+        // Scope Add buttons to their section; never click a global Add button.
+        for (const [headingId, type, entries] of [
+            ['Work-Experience-section', 'workExperience', profile.experience],
+            ['Languages-section', 'language', profile.languages]
+        ]) {
+            if (!entries?.length) continue;
+            const section = document.getElementById(headingId)?.parentElement;
+            if (!section || !isElementVisible(section)) continue;
+            const count = () => new Set([...section.querySelectorAll('[id]')]
+                .map(el => el.id.match(new RegExp(`^${type}-[^-]+--`))?.[0]).filter(Boolean)).size;
+            const previous = this.sectionFailures.get(section);
+            if (!manual && previous?.target === entries.length && previous?.count === count()) {
+                issues.push(previous.message);
+                continue;
+            }
+            this.sectionFailures.delete(section);
+            const fail = message => {
+                issues.push(message);
+                this.sectionFailures.set(section, {target:entries.length, count:count(), message});
+            };
+            // Each click must produce a new record before another click is sent.
+            for (let attempt = 0; attempt < entries.length && count() < entries.length; attempt++) {
+                const before = count();
+                const add = [...section.querySelectorAll('button')].find(button =>
+                    /^(add|add another|add more)$/i.test(button.textContent.trim()) &&
+                    !button.disabled && isElementVisible(button));
+                if (!add) { fail(`Add missing ${type === 'language' ? 'languages' : 'experience'} manually`); break; }
+                add.click();
+                const started = Date.now();
+                while (section.isConnected && count() <= before && Date.now() - started < 3000) {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                if (!section.isConnected || count() <= before) {
+                    fail(`Could not add ${type === 'language' ? 'language' : 'experience'} section`);
+                    break;
+                }
+            }
+        }
+        return issues;
     }
 
     /**
@@ -23,8 +67,16 @@ class AutofillEngine {
         }
 
         try {
+            if ((fieldType === 'url' || element.type === 'url') && value !== '' &&
+                !globalThis.FieldPolicy?.validURL(value, globalThis.FieldPolicy.urlKind({element,type:fieldType}))) {
+                return {success:false,method:'url:invalid'};
+            }
             const tag = element.tagName?.toLowerCase();
             const type = element.type?.toLowerCase();
+
+            if (fieldType === 'skills' || element.id === 'skills--skills') {
+                return this.fillSearchSelectSkills(element, Array.isArray(value) ? value : String(value).split(/[,;\n]/).map(s => s.trim()).filter(Boolean));
+            }
 
             // Determine strategy
             if (tag === 'select') {
@@ -43,7 +95,7 @@ class AutofillEngine {
                 return this.fillContentEditable(element, value);
             }
 
-            if (element.getAttribute('role') === 'combobox' || fieldType === 'combobox' || fieldType === 'dropdown') {
+            if (element.getAttribute('data-uxi-widget-type') === 'selectinput' || element.getAttribute('role') === 'combobox' || fieldType === 'combobox' || fieldType === 'dropdown') {
                 // Check if this is a native input inside a combobox wrapper, or a custom combobox
                 if (tag === 'input') {
                     // It's an input with combobox role — fill via React-safe setter + try to open dropdown
@@ -69,6 +121,34 @@ class AutofillEngine {
         }
     }
 
+    async captureFieldOptions(field) {
+        const element = field.element;
+        if (element.tagName === 'SELECT') return [...element.options].filter(o=>o.value && !o.disabled)
+            .map(o=>({label:o.textContent.trim(),value:o.value}));
+        if (field.type === 'radio') {
+            return [...(element.form || element.getRootNode()).querySelectorAll('input[type="radio"]')]
+                .filter(e=>e.name === element.name && !e.disabled).map(e=>({
+                    label:document.querySelector(`label[for="${e.id}"]`)?.textContent.trim() || e.getAttribute('aria-label') || e.value,
+                    value:e.value}));
+        }
+        if (!['combobox','dropdown'].includes(field.type) || element.getAttribute('data-uxi-widget-type') === 'selectinput') {
+            return (field.options || []).map(label=>({label,value:label}));
+        }
+        // Only inspect controls; never send a full page's HTML or field values.
+        if (!element.isConnected || element.disabled) return [];
+        element.click();
+        try {
+            const options = await this.waitForDropdownOptions(element);
+            return options.filter(option=>option.getAttribute('aria-disabled') !== 'true' &&
+                !/^(select one|select|choose)$/i.test(this.optionText(option)))
+                .map(option=>({label:this.optionText(option),value:option.getAttribute('data-value') || option.id || this.optionText(option)}));
+        } finally {
+            element.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
+            element.blur();
+            document.body.click();
+        }
+    }
+
     /**
      * Fill a text input or textarea using React-compatible native setter
      * Works with React, Angular, Vue, and vanilla forms
@@ -77,23 +157,80 @@ class AutofillEngine {
      * @returns {{ success: boolean, method: string }}
      */
     fillTextInput(element, value) {
+        // For date inputs, convert natural-language dates to YYYY-MM-DD
+        let fillValue = this.normalizePhoneValue(element, value);
+        if (element.type === 'date') {
+            const parsed = parseResumeDate(value);
+            if (parsed) fillValue = parsed;
+        }
+
+        // Workday commits segmented dates on focusout. A dispatched `blur`
+        // alone doesn't reach React's delegated focus handlers.
+        element.focus();
+
         // Strategy: Use native value setter to bypass React's internal state tracking
         const nativeSetter = this.getNativeValueSetter(element);
 
+        // A previous fill may have updated the DOM/React value tracker without
+        // updating Workday's form state. Replaying the same value alone is ignored
+        // by React; a real input transition makes the final value observable.
+        if (element.value !== '') {
+            if (nativeSetter) nativeSetter.call(element, ''); else element.value = '';
+            element.dispatchEvent(new Event('input', {bubbles:true}));
+        }
+
         if (nativeSetter) {
-            nativeSetter.call(element, value);
+            nativeSetter.call(element, fillValue);
         } else {
-            element.value = value;
+            element.value = fillValue;
         }
 
         // Dispatch events in the correct order for React and other frameworks
-        element.dispatchEvent(new Event('focus', { bubbles: true }));
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
-        element.dispatchEvent(new Event('blur', { bubbles: true }));
+        element.blur();
 
-        this.logFill(element, value, 'nativeSetter');
+        this.logFill(element, fillValue, 'nativeSetter');
         return { success: true, method: 'nativeSetter' };
+    }
+
+    needsDateCommit(element, value) {
+        if (!/dateSection(?:Month|Day|Year)-input$/.test(element.id || '')) return false;
+        // Recommit the same visible value; preserve any different user entry.
+        if (String(element.value) !== String(value)) return false;
+        return this.hasFieldError(element);
+    }
+
+    hasFieldError(element) {
+        const wrapper = element.closest('[data-automation-id="dateInputWrapper"]');
+        if (element.getAttribute('aria-invalid') === 'true' ||
+            /\bERROR\b/.test(wrapper?.getAttribute('aria-labelledby') || '')) return true;
+        const describedBy = (element.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+        return describedBy.some(id => {
+            const alert = document.getElementById(id);
+            return alert?.getAttribute('data-automation-id') === 'inputAlert' && isElementVisible(alert);
+        });
+    }
+
+    needsValueCommit(element, value) {
+        return ['INPUT','TEXTAREA'].includes(element.tagName) &&
+            !['checkbox','radio','file','hidden'].includes(element.type) &&
+            element.getAttribute('data-uxi-widget-type') !== 'selectinput' &&
+            String(value || '').trim() !== '' && this.hasFieldError(element);
+    }
+
+    normalizePhoneValue(element, value) {
+        // Workday has a separate country-code control. Its phone field expects
+        // national digits, not the international prefix or display punctuation.
+        if (element.id !== 'phoneNumber--phoneNumber') return String(value);
+        const digits = String(value).replace(/\D/g, '');
+        const country = document.getElementById('country--country')?.textContent || '';
+        const code = document.getElementById('phoneNumber--countryPhoneCode');
+        const codeText = code?.parentElement?.textContent || '';
+        const isIndia = /india|\+91/i.test(codeText || country);
+        if (isIndia && digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+        if (isIndia && digits.length === 14 && digits.startsWith('0091')) return digits.slice(4);
+        return digits;
     }
 
     /**
@@ -103,7 +240,7 @@ class AutofillEngine {
      * @returns {{ success: boolean, method: string }}
      */
     fillNativeSelect(element, value) {
-        const normalizedValue = value.toLowerCase().trim();
+        const normalizedValue = String(value).toLowerCase().trim();
 
         // Try exact match on value
         for (const option of element.options) {
@@ -161,7 +298,8 @@ class AutofillEngine {
      * @returns {Promise<{ success: boolean, method: string }>}
      */
     async fillCustomDropdown(element, value) {
-        const normalizedValue = value.toLowerCase().trim();
+        const normalizedValue = String(value).toLowerCase().trim();
+        const proficiency = /^language-[^-]+--/.test(element.id || '') && !element.id.endsWith('--language');
 
         // Step 1: Click the combobox to open it
         element.click();
@@ -182,11 +320,11 @@ class AutofillEngine {
         // Exact text match
         matchedOption = options.find(opt => {
             const text = (opt.textContent || opt.innerText || '').toLowerCase().trim();
-            return text === normalizedValue;
+            return (proficiency ? text.replace(/^\d+\s*[-–.:]\s*/, '') : text) === normalizedValue;
         });
 
         // Partial match
-        if (!matchedOption) {
+        if (!matchedOption && !proficiency) {
             matchedOption = options.find(opt => {
                 const text = (opt.textContent || opt.innerText || '').toLowerCase().trim();
                 return text.includes(normalizedValue) || normalizedValue.includes(text);
@@ -194,7 +332,7 @@ class AutofillEngine {
         }
 
         // Fuzzy match
-        if (!matchedOption) {
+        if (!matchedOption && !proficiency) {
             let bestScore = 0;
             for (const opt of options) {
                 const text = (opt.textContent || opt.innerText || '').toLowerCase().trim();
@@ -229,53 +367,89 @@ class AutofillEngine {
      * @param {string} value
      * @returns {Promise<{ success: boolean, method: string }>}
      */
+    selectedLabels(element) {
+        const container = element.closest('[data-automation-id="multiSelectContainer"]');
+        return Array.from(container?.querySelectorAll('[data-automation-id="selectedItem"] [data-automation-label]') || [])
+            .map(chip => chip.getAttribute('data-automation-label') || chip.textContent.trim());
+    }
+
+    optionText(option) {
+        const label = option.querySelector?.('[data-automation-id="promptOption"]');
+        return (label?.getAttribute('data-automation-label') || option.getAttribute('data-automation-label') || option.textContent || '').trim();
+    }
+
+    async waitForMatch(element, value, timeout = this.optionWaitTimeout) {
+        const norm = String(value).trim().toLowerCase().replace(/\s+/g, ' ');
+        const started = Date.now();
+        while (element.isConnected && Date.now() - started < timeout) {
+            const option = this.findDropdownOptions(element).find(opt =>
+                this.optionText(opt).toLowerCase().replace(/\s+/g, ' ') === norm);
+            if (option) return option;
+            await new Promise(resolve => setTimeout(resolve, element.id === 'skills--skills' ? 25 : this.optionPollInterval));
+        }
+        return null;
+    }
+
     async fillComboboxInput(element, value) {
-        // Clear existing value
-        const nativeSetter = this.getNativeValueSetter(element);
-        if (nativeSetter) {
-            nativeSetter.call(element, '');
-        } else {
-            element.value = '';
+        if (this.selectedLabels(element).some(label => label.toLowerCase() === String(value).trim().toLowerCase())) {
+            return {success:true, method:'comboboxInput:alreadySelected'};
         }
-
-        // Focus and type the value
+        const original = element.value;
+        const setter = this.getNativeValueSetter(element);
+        const type = text => {
+            if (setter) setter.call(element, text); else element.value = text;
+            element.dispatchEvent(new Event('input', {bubbles:true}));
+        };
         element.focus();
-        element.dispatchEvent(new Event('focus', { bubbles: true }));
-
-        if (nativeSetter) {
-            nativeSetter.call(element, value);
-        } else {
-            element.value = value;
-        }
-
-        element.dispatchEvent(new Event('input', { bubbles: true }));
-        element.dispatchEvent(new Event('change', { bubbles: true }));
-
-        // Wait for filtered options to appear
-        const options = await this.waitForDropdownOptions(element);
-
-        if (options && options.length > 0) {
-            // Try to find and click exact or best match
-            const normalizedValue = value.toLowerCase().trim();
-            let matchedOption = options.find(opt => {
-                const text = (opt.textContent || opt.innerText || '').toLowerCase().trim();
-                return text === normalizedValue || text.includes(normalizedValue);
-            });
-
-            if (!matchedOption) matchedOption = options[0]; // Take first filtered result
-
-            if (matchedOption) {
-                matchedOption.scrollIntoView({ block: 'nearest' });
-                matchedOption.click();
-                this.logFill(element, value, 'comboboxInput:selected');
-                return { success: true, method: 'comboboxInput:selected' };
+        element.click();
+        type(String(value));
+        const option = await this.waitForMatch(element, value, element.id === 'skills--skills' ? Math.min(600, this.optionWaitTimeout) : this.optionWaitTimeout);
+        if (!option && element.id === 'skills--skills') {
+            // Workday Skills allows free-text chips when no taxonomy option matches.
+            for (const event of ['keydown', 'keypress', 'keyup']) {
+                element.dispatchEvent(new KeyboardEvent(event, {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true}));
             }
+        } else if (!option) {
+            element.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', code:'Escape', bubbles:true}));
+            type(original);
+            element.blur();
+            return {success:false, method:'comboboxInput:noMatch'};
         }
+        if (option) {
+            // Workday binds selection to the inner prompt leaf, not the outer
+            // virtualized row. Clicking the row bypasses that event handler.
+            const target = option.querySelector?.('[data-automation-id="promptLeafNode"]') || option;
+            target.click();
+        }
+        // Workday stores selected values in chips rather than the search input.
+        if (element.getAttribute('data-uxi-widget-type') === 'selectinput') {
+            const started = Date.now();
+            while (Date.now() - started < this.optionWaitTimeout) {
+                if (this.selectedLabels(element).some(label => label.toLowerCase() === String(value).trim().toLowerCase())) {
+                    type('');
+                    this.logFill(element, value, 'comboboxInput:selected');
+                    return {success:true, method:'comboboxInput:selected'};
+                }
+                await new Promise(resolve => setTimeout(resolve, element.id === 'skills--skills' ? 25 : this.optionPollInterval));
+            }
+            type(original);
+            return {success:false, method:'comboboxInput:notCommitted'};
+        }
+        this.logFill(element, value, 'comboboxInput:selected');
+        return {success:true, method:'comboboxInput:selected'};
+    }
 
-        // Even if dropdown didn't open, the typed value may be accepted
-        element.dispatchEvent(new Event('blur', { bubbles: true }));
-        this.logFill(element, value, 'comboboxInput:typed');
-        return { success: true, method: 'comboboxInput:typed' };
+    async fillSearchSelectSkills(element, skills) {
+        const selected = [], missing = [];
+        const unique = [...new Map(skills.map(s => String(s).trim()).filter(Boolean).map(s => [s.toLowerCase(),s])).values()];
+        for (const skill of unique) {
+            if (!element.isConnected) { missing.push(skill); continue; }
+            if (this.selectedLabels(element).some(label => label.toLowerCase() === skill.toLowerCase())) continue;
+            const result = await this.fillComboboxInput(element, skill);
+            (result.success ? selected : missing).push(skill);
+        }
+        element.blur();
+        return {success:selected.length > 0, method:'searchSelectSkills', count:selected.length, selected, missing};
     }
 
     /**
@@ -285,17 +459,16 @@ class AutofillEngine {
      * @returns {{ success: boolean, method: string }}
      */
     fillCheckbox(element, value) {
-        const normalizedValue = value.toLowerCase().trim();
+        const normalizedValue = String(value).toLowerCase().trim();
         const shouldCheck = ['true', 'yes', '1', 'on'].includes(normalizedValue) ||
-            element.value.toLowerCase().trim() === normalizedValue;
+            (!['false','no','0','off'].includes(normalizedValue) &&
+                !!element.value && element.value.toLowerCase().trim() === normalizedValue);
 
         if (element.checked !== shouldCheck) {
-            element.checked = shouldCheck;
-            element.dispatchEvent(new Event('click', { bubbles: true }));
-            element.dispatchEvent(new Event('input', { bubbles: true }));
-            element.dispatchEvent(new Event('change', { bubbles: true }));
+            element.click();
         }
 
+        if (element.checked !== shouldCheck) return {success:false, method:'checkbox:notCommitted'};
         this.logFill(element, String(shouldCheck), 'checkbox');
         return { success: true, method: 'checkbox' };
     }
@@ -308,34 +481,27 @@ class AutofillEngine {
      * @returns {{ success: boolean, method: string }}
      */
     fillRadio(element, value) {
-        const normalizedValue = value.toLowerCase().trim();
-        const radioName = element.name;
-
-        // Find all radios in the same group
-        let radios = [element];
-        if (radioName) {
-            radios = Array.from(document.querySelectorAll(`input[type="radio"][name="${radioName}"]`));
-        }
-
-        // Find matching radio
-        let matched = radios.find(r => r.value.toLowerCase().trim() === normalizedValue);
-
-        // Try label text match
-        if (!matched) {
-            matched = radios.find(r => {
-                const label = document.querySelector(`label[for="${r.id}"]`);
-                const labelText = label ? label.textContent.toLowerCase().trim() : '';
-                return labelText.includes(normalizedValue) || normalizedValue.includes(labelText);
+        const normalizedValue = String(value).toLowerCase().trim();
+        const root = element.form || element.getRootNode();
+        const radios = element.name
+            ? Array.from(root.querySelectorAll('input[type="radio"]')).filter(r => r.name === element.name)
+            : [element];
+        const aliases = normalizedValue === 'no' ? ['no', 'false'] :
+            normalizedValue === 'yes' ? ['yes', 'true'] : [normalizedValue];
+        const matched = radios.find(r => aliases.includes(String(r.value).toLowerCase().trim())) ||
+            radios.find(r => {
+                const label = r.labels?.[0] || r.closest('label');
+                const text = (label?.textContent || r.getAttribute('aria-label') || '').toLowerCase().trim();
+                return text && aliases.includes(text);
             });
-        }
 
-        if (matched) {
-            matched.checked = true;
-            matched.dispatchEvent(new Event('click', { bubbles: true }));
+        if (matched && !matched.disabled) {
+            // Native click updates both browser radio state and React's handler.
+            matched.click();
             matched.dispatchEvent(new Event('input', { bubbles: true }));
             matched.dispatchEvent(new Event('change', { bubbles: true }));
             this.logFill(matched, value, 'radio');
-            return { success: true, method: 'radio' };
+            return { success: matched.checked, method: 'radio' };
         }
 
         return { success: false, method: 'radio:noMatch' };
@@ -419,6 +585,17 @@ class AutofillEngine {
      */
     findDropdownOptions(trigger) {
         let options = [];
+        const selectable = nodes => Array.from(nodes).filter(o =>
+            isElementVisible(o) && !o.closest('[data-automation-id="selectedItemList"]') &&
+            o.getAttribute('aria-disabled') !== 'true');
+        if (trigger.getAttribute('data-uxi-widget-type') === 'selectinput') {
+            const owner = trigger.getAttribute('data-uxi-multiselect-id');
+            const owned = document.querySelectorAll('[data-uxi-multiselect-id]');
+            options = [...new Set(selectable(owned).filter(o => o.getAttribute('data-uxi-multiselect-id') === owner &&
+                o.getAttribute('data-automation-id') === 'promptLeafNode').map(o => o.closest('[role="option"]')).filter(Boolean))];
+            // An empty owned list must not fall through to another field's menu.
+            return options;
+        }
 
         // Strategy 1: aria-controls points to a listbox
         const controlsId = trigger.getAttribute('aria-controls') ||
@@ -427,7 +604,7 @@ class AutofillEngine {
             const listbox = document.getElementById(controlsId);
             if (listbox) {
                 options = Array.from(listbox.querySelectorAll('[role="option"], li, [data-value]'));
-                if (options.length > 0) return options.filter(o => isElementVisible(o));
+                if (selectable(options).length > 0) return selectable(options);
             }
         }
 
@@ -438,7 +615,7 @@ class AutofillEngine {
         for (const lb of listboxes) {
             if (isElementVisible(lb)) {
                 options = Array.from(lb.querySelectorAll('[role="option"], li, [data-value], .option'));
-                if (options.length > 0) return options.filter(o => isElementVisible(o));
+                if (selectable(options).length > 0) return selectable(options);
             }
         }
 
@@ -446,12 +623,12 @@ class AutofillEngine {
         const parent = trigger.closest('[data-automation-id], .form-field, .field-wrapper, .form-group') || trigger.parentElement;
         if (parent) {
             options = Array.from(parent.querySelectorAll('[role="option"], li[data-value], .option'));
-            if (options.length > 0) return options.filter(o => isElementVisible(o));
+            if (selectable(options).length > 0) return selectable(options);
         }
 
         // Strategy 4: Recently appeared elements (portal-rendered dropdowns)
         const allOptions = document.querySelectorAll('[role="option"]');
-        options = Array.from(allOptions).filter(o => isElementVisible(o));
+        options = selectable(allOptions);
 
         return options;
     }

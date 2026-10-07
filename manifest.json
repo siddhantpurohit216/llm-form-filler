@@ -29,6 +29,7 @@
       "js": [
         "src/utils/constants.js",
         "src/utils/helpers.js",
+        "src/utils/field-policy.js",
         "src/storage/session-cache.js",
         "src/content/field-extractor.js",
         "src/content/deterministic-matcher.js",

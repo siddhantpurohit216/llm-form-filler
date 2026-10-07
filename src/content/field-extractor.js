@@ -18,6 +18,7 @@ class FieldExtractor {
         'select',
         '[role="textbox"]',
         '[role="combobox"]',
+        'button[aria-haspopup="listbox"][name]',
         '[contenteditable="true"]'
     ].join(', ');
 
@@ -26,6 +27,7 @@ class FieldExtractor {
      * @returns {Array} Array of FieldDescriptor objects
      */
     extractAllFields() {
+        this.extractedFields.clear();
         const fields = [];
         const allElements = new Set();
 
@@ -44,6 +46,12 @@ class FieldExtractor {
 
             const fieldData = this.extractFieldData(element, index++);
             if (fieldData) {
+                const record = element.id?.match(/^(workExperience|education|language)-[^-]+--/);
+                if (record) {
+                    const recordIds = [...allElements].map(el => el.id?.match(new RegExp(`^${record[1]}-[^-]+--`))?.[0]).filter(Boolean);
+                    fieldData.recordType = record[1];
+                    fieldData.recordIndex = [...new Set(recordIds)].indexOf(record[0]);
+                }
                 fields.push(fieldData);
                 this.extractedFields.set(fieldData.id, fieldData);
             }
@@ -86,8 +94,10 @@ class FieldExtractor {
         const type = element.type?.toLowerCase() || '';
 
         // Skip these input types
-        const skipTypes = ['hidden', 'submit', 'button', 'reset', 'image', 'file'];
-        if (skipTypes.includes(type)) {
+        const skipTypes = ['hidden', 'password', 'submit', 'button', 'reset', 'image', 'file'];
+        if (element.closest('[data-sja-ui], [data-automation-id="activeListContainer"]') || element.disabled || element.readOnly) return true;
+        const isDropdown = element.matches('button[aria-haspopup="listbox"][name]');
+        if (skipTypes.includes(type) && !isDropdown) {
             return true;
         }
 
@@ -114,11 +124,13 @@ class FieldExtractor {
         const type = element.type?.toLowerCase() || '';
         const role = element.getAttribute('role');
 
+        if (element.id === 'skills--skills') return 'skills';
+        if (tag === 'input' && element.getAttribute('data-uxi-widget-type') === 'selectinput') return 'combobox';
         if (tag === 'select') return 'dropdown';
         if (tag === 'textarea') return 'textarea';
         if (type === 'checkbox') return 'checkbox';
         if (type === 'radio') return 'radio';
-        if (role === 'combobox') return 'combobox';
+        if (role === 'combobox' || element.matches('button[aria-haspopup="listbox"][name]')) return 'combobox';
         if (role === 'textbox' || element.getAttribute('contenteditable') === 'true') return 'textarea';
 
         return 'text';
@@ -133,12 +145,13 @@ class FieldExtractor {
      */
     extractFieldData(element, index) {
         const tagName = element.tagName?.toLowerCase() || '';
-        const fieldType = this.normalizeFieldType(element);
+        let fieldType = this.normalizeFieldType(element);
 
-        // Generate unique ID if none exists
-        const fieldId = element.id || element.name ||
-            element.getAttribute('data-automation-id') ||
-            `sja_field_${index}`;
+        // Keep identity stable across scans and repeated SPA sections.
+        if (!element.dataset.sjaFieldId) {
+            element.dataset.sjaFieldId = `${element.id || element.name || 'sja_field'}--${generateId()}`;
+        }
+        const fieldId = element.dataset.sjaFieldId;
 
         // Label detection priority:
         // 1. associated <label> element
@@ -156,6 +169,7 @@ class FieldExtractor {
         // Resolved label using priority chain
         const label = labelText || placeholderText || ariaLabel ||
             element.name || nearbyText || '';
+        if (globalThis.FieldPolicy?.urlKind({label:labelText, name:element.name, placeholder:placeholderText, ariaLabel, element, type:element.type})) fieldType = 'url';
 
         // Combine all hints for matching
         const allHints = [
@@ -186,7 +200,7 @@ class FieldExtractor {
         const options = this.extractOptions(element, fieldType);
 
         // Determine if this is a long-form text field
-        const isLongForm = this.isLongFormField(element, combinedHint);
+        const isLongForm = fieldType !== 'url' && this.isLongFormField(element, combinedHint);
 
         return {
             id: fieldId,
@@ -219,7 +233,7 @@ class FieldExtractor {
             confidenceScore: label ? 1.0 : 0.5,
 
             // Current state
-            currentValue: element.value || element.textContent?.trim() || '',
+            currentValue: this.getCurrentValue(element),
             isFilledByExtension: false,
 
             // Matching info (filled by matcher)
@@ -227,6 +241,27 @@ class FieldExtractor {
             matchConfidence: 0,
             matchSource: null
         };
+    }
+
+    getCurrentValue(element) {
+        if (element.getAttribute('data-uxi-widget-type') === 'selectinput') {
+            const container = element.closest('[data-automation-id="multiSelectContainer"]');
+            // The search input is empty after selection; chips hold the saved value.
+            return Array.from(container?.querySelectorAll('[data-automation-id="selectedItem"] [data-automation-label]') || [])
+                .map(chip => chip.getAttribute('data-automation-label')).join(', ');
+        }
+        if (element.type === 'radio' && element.name) {
+            const root = element.form || element.getRootNode();
+            const selected = Array.from(root.querySelectorAll('input[type="radio"]'))
+                .find(r => r.name === element.name && r.checked);
+            return selected?.value || '';
+        }
+        if (['checkbox', 'radio'].includes(element.type)) return element.checked ? element.value : '';
+        if (element.matches('button[aria-haspopup="listbox"][name]')) {
+            const text = element.textContent?.trim() || '';
+            return /^(select one|select|choose|please select)$/i.test(text) ? '' : text;
+        }
+        return element.value ?? element.textContent?.trim() ?? '';
     }
 
     /**
@@ -285,6 +320,14 @@ class FieldExtractor {
      */
     findLabelText(element) {
         const texts = [];
+        // Workday questionnaires use a rich legend several wrappers above the
+        // control. aria-label often contains only "Select One Required".
+        const legend = element.closest('fieldset')?.querySelector?.(':scope > legend');
+        if (legend) {
+            const paragraphs = [...legend.querySelectorAll('p')].map(p=>p.textContent.trim()).filter(Boolean);
+            const question = paragraphs.length ? paragraphs.join('\n') : legend.textContent.trim();
+            if (question) return question.slice(0,4000);
+        }
 
         // Method 1: Explicit label with for attribute
         if (element.id) {
@@ -334,7 +377,7 @@ class FieldExtractor {
             }
         }
 
-        return texts.filter(t => t.length > 0 && t.length < 200)[0] || '';
+        return texts.find(t => t.length > 0)?.slice(0,4000) || '';
     }
 
     /**

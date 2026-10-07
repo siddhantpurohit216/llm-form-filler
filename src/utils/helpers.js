@@ -184,8 +184,13 @@ function isElementVisible(element) {
     if (!element) return false;
 
     const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+    if (style.display === 'none' || style.visibility === 'hidden') {
         return false;
+    }
+    if (style.opacity === '0') {
+        // Workday draws the visible checkbox beside a transparent native input.
+        // Keep the native control available when its wrapper is visible.
+        if (!['checkbox','radio'].includes(element.type) || !isElementVisible(element.parentElement)) return false;
     }
 
     const rect = element.getBoundingClientRect();
@@ -331,6 +336,75 @@ function formatPhoneNumber(phone) {
     return phone; // Return original if not standard format
 }
 
+/**
+ * Convert a resume date string to YYYY-MM-DD format (required by <input type="date">)
+ * Handles natural-language dates like "June 2022", "Jan 2021", "2022-06", "2022"
+ * @param {string} dateStr - Raw date string from resume or profile
+ * @returns {string} Date in YYYY-MM-DD, or "" if unparseable
+ */
+function parseResumeDate(dateStr) {
+    if (!dateStr || typeof dateStr !== 'string') return '';
+
+    const s = dateStr.trim();
+
+    // Already in YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+    // YYYY-MM → YYYY-MM-01
+    if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+
+    // Year only → YYYY-01-01
+    if (/^\d{4}$/.test(s)) return `${s}-01-01`;
+
+    const MONTH_MAP = {
+        january: '01', jan: '01',
+        february: '02', feb: '02',
+        march: '03', mar: '03',
+        april: '04', apr: '04',
+        may: '05',
+        june: '06', jun: '06',
+        july: '07', jul: '07',
+        august: '08', aug: '08',
+        september: '09', sep: '09', sept: '09',
+        october: '10', oct: '10',
+        november: '11', nov: '11',
+        december: '12', dec: '12'
+    };
+
+    // "Month YYYY" or "Month, YYYY"
+    const monthYear = s.match(/^([A-Za-z]+)[,.\s]+(\d{4})$/);
+    if (monthYear) {
+        const month = MONTH_MAP[monthYear[1].toLowerCase()];
+        if (month) return `${monthYear[2]}-${month}-01`;
+    }
+
+    // "YYYY Month"
+    const yearMonth = s.match(/^(\d{4})[,.\s]+([A-Za-z]+)$/);
+    if (yearMonth) {
+        const month = MONTH_MAP[yearMonth[2].toLowerCase()];
+        if (month) return `${yearMonth[1]}-${month}-01`;
+    }
+
+    // "MM/YYYY" or "MM-YYYY"
+    const slashDate = s.match(/^(\d{1,2})[\/\-](\d{4})$/);
+    if (slashDate) {
+        return `${slashDate[2]}-${slashDate[1].padStart(2, '0')}-01`;
+    }
+
+    // Try native Date parsing as last resort
+    try {
+        const d = new Date(s);
+        if (!isNaN(d.getTime())) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+        }
+    } catch (_) { /* ignore */ }
+
+    return '';
+}
+
 // Export for use in different contexts
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -350,6 +424,7 @@ if (typeof module !== 'undefined' && module.exports) {
         safeJsonParse,
         stringSimilarity,
         extractSelectOptions,
-        formatPhoneNumber
+        formatPhoneNumber,
+        parseResumeDate
     };
 }

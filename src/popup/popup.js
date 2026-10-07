@@ -4,11 +4,37 @@
 
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
+    initPageActions();
     initProfile();
     initResume();
     initSettings();
     updateStatus('Ready');
 });
+
+async function initPageActions() {
+    const summary = document.getElementById('page-summary');
+    const button = document.getElementById('popup-autofill');
+    let tab;
+    try {
+        [tab] = await chrome.tabs.query({active:true, currentWindow:true});
+        const status = await chrome.tabs.sendMessage(tab.id, {type:'GET_FORM_STATUS'});
+        summary.textContent = status.hasForm ? `${status.fieldCount} application fields detected` : 'Open an application form to get started';
+        button.disabled = !status.hasForm;
+    } catch {
+        summary.textContent = 'Open or refresh an application page';
+        button.disabled = true;
+    }
+    button.addEventListener('click', async () => {
+        button.disabled = true;
+        button.textContent = 'Filling…';
+        try {
+            const response = await chrome.tabs.sendMessage(tab.id, {type:'TRIGGER_AUTOFILL'});
+            if (!response?.success) throw new Error('Autofill failed');
+            summary.textContent = 'Done. Review your answers on the page.';
+        } catch { summary.textContent = 'Refresh the application page and try again'; }
+        finally { button.disabled = false; button.textContent = 'Autofill'; }
+    });
+}
 
 // ========== Tabs ==========
 function initTabs() {
@@ -35,7 +61,7 @@ async function initProfile() {
 async function loadProfile() {
     try {
         const response = await chrome.runtime.sendMessage({ type: 'GET_PROFILE' });
-        profileData = response.profile || getDefaultProfile();
+        profileData = ResumeProfile.profile(response.profile || getDefaultProfile());
         populateProfileForm(profileData);
     } catch (error) {
         console.error('Failed to load profile:', error);
@@ -49,11 +75,17 @@ function getDefaultProfile() {
         links: { linkedin: '', github: '', portfolio: '' },
         education: [],
         experience: [],
+        languages: [],
         skills: []
     };
 }
 
 function populateProfileForm(profile) {
+    const defaults = profile.applicationDefaults || {};
+    document.getElementById('application-country').value = defaults.applicationCountry || '';
+    document.getElementById('work-eligibility').value = defaults.workEligibility?.[defaults.applicationCountry] || '';
+    document.getElementById('previous-employment').value = defaults.previouslyEmployed === true ? 'Yes' : 'No';
+    document.getElementById('disability-answer').value = defaults.disability || '';
     // Contact
     document.getElementById('firstName').value = profile.contact?.firstName || '';
     document.getElementById('lastName').value = profile.contact?.lastName || '';
@@ -70,9 +102,13 @@ function populateProfileForm(profile) {
 
     // Experience
     renderExperienceList(profile.experience || []);
+    renderLanguagesList(profile.languages || []);
 
     // Skills
     renderSkillsList(profile.skills || []);
+
+    // Custom Fields
+    renderCustomFieldsList(profile.customFields || {});
 }
 
 function setupProfileListeners() {
@@ -91,6 +127,17 @@ function setupProfileListeners() {
         profileData.experience = profileData.experience || [];
         profileData.experience.push({ company: '', title: '', startDate: '', endDate: '', description: '' });
         renderExperienceList(profileData.experience);
+    });
+
+    // Add custom field
+    document.getElementById('add-language').addEventListener('click', () => {
+        profileData.languages = profileData.languages || [];
+        profileData.languages.push({language:'', proficiency:'Fluent'});
+        renderLanguagesList(profileData.languages);
+    });
+
+    document.getElementById('add-custom-field').addEventListener('click', () => {
+        addCustomField('', '');
     });
 
     // Skills input
@@ -125,6 +172,7 @@ function renderEducationList(education) {
 
         // Input listeners
         card.querySelectorAll('input').forEach(input => {
+            input.addEventListener('input', () => updateEducation(index, card));
             input.addEventListener('change', () => updateEducation(index, card));
         });
 
@@ -140,6 +188,7 @@ function renderEducationList(education) {
 
 function updateEducation(index, card) {
     profileData.education[index] = {
+        ...profileData.education[index],
         institution: card.querySelector('.edu-institution').value,
         degree: card.querySelector('.edu-degree').value,
         major: card.querySelector('.edu-major').value,
@@ -164,9 +213,12 @@ function renderExperienceList(experience) {
         card.querySelector('.exp-start').value = exp.startDate || '';
         card.querySelector('.exp-end').value = exp.endDate || '';
         card.querySelector('.exp-description').value = exp.description || '';
+        card.querySelector('.exp-current').checked = exp.current === true;
+        card.querySelector('.exp-end').disabled = exp.current === true;
 
         // Input listeners
         card.querySelectorAll('input, textarea').forEach(input => {
+            input.addEventListener('input', () => updateExperience(index, card));
             input.addEventListener('change', () => updateExperience(index, card));
         });
 
@@ -181,13 +233,67 @@ function renderExperienceList(experience) {
 }
 
 function updateExperience(index, card) {
+    const previous = profileData.experience[index];
+    const description = card.querySelector('.exp-description').value;
+    const current = card.querySelector('.exp-current').checked;
+    card.querySelector('.exp-end').disabled = current;
+    if (current) card.querySelector('.exp-end').value = '';
     profileData.experience[index] = {
+        ...previous,
         company: card.querySelector('.exp-company').value,
         title: card.querySelector('.exp-title').value,
         startDate: card.querySelector('.exp-start').value,
         endDate: card.querySelector('.exp-end').value,
-        description: card.querySelector('.exp-description').value
+        current,
+        description,
+        ...(description !== previous.description ? {achievements:[],responsibilities:[]} : {})
     };
+}
+
+function renderLanguagesList(languages) {
+    const container = document.getElementById('languages-list');
+    container.replaceChildren();
+    languages.forEach((entry, index) => {
+        const record = typeof entry === 'string' ? {language:entry} : entry;
+        profileData.languages[index] = record;
+        const card = document.createElement('div');
+        card.className = 'item-card';
+        for (const key of ['language','overall','comprehension','reading','speaking','writing','listening']) {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            const label = document.createElement('label');
+            label.textContent = key[0].toUpperCase() + key.slice(1);
+            const input = document.createElement(key === 'language' ? 'input' : 'select');
+            input.id = `language-${index}-${key}`;
+            label.htmlFor = input.id;
+            if (key !== 'language') {
+                for (const value of ['Fluent','Advanced','Intermediate','Classroom Study','Beginner']) {
+                    const option = document.createElement('option');
+                    option.value = value;
+                    option.textContent = value;
+                    input.appendChild(option);
+                }
+            }
+            input.value = key === 'language' ? record.language || record.name || '' : record[key] || record.proficiency || 'Fluent';
+            const update = () => {
+                profileData.languages[index] = {...record, ...profileData.languages[index], [key]:input.value};
+                if (key === 'overall') profileData.languages[index].fluent = input.value === 'Fluent';
+            };
+            input.addEventListener('input', update);
+            input.addEventListener('change', update);
+            group.append(label,input);
+            card.appendChild(group);
+        }
+        const remove = document.createElement('button');
+        remove.className = 'btn btn-remove';
+        remove.textContent = 'Remove language';
+        remove.addEventListener('click', () => {
+            profileData.languages.splice(index,1);
+            renderLanguagesList(profileData.languages);
+        });
+        card.appendChild(remove);
+        container.appendChild(card);
+    });
 }
 
 function renderSkillsList(skills) {
@@ -207,8 +313,36 @@ function renderSkillsList(skills) {
 }
 
 async function saveProfile() {
+    for (const kind of ['linkedin','github','portfolio']) {
+        const input = document.getElementById(kind);
+        if (input.value.trim() && !FieldPolicy.validURL(input.value,kind)) {
+            updateStatus(`Enter a valid ${kind} http(s) URL, or leave it blank.`, 'error');
+            input.focus();
+            return;
+        }
+    }
+    const country = document.getElementById('application-country').value.trim();
+    profileData.applicationDefaults = {...profileData.applicationDefaults,
+        applicationCountry:country,
+        workEligibility:{...profileData.applicationDefaults?.workEligibility,[country]:document.getElementById('work-eligibility').value},
+        previouslyEmployed:document.getElementById('previous-employment').value === 'Yes',
+        disability:document.getElementById('disability-answer').value};
+    const invalidDate = [...document.querySelectorAll('.exp-start,.exp-end,.edu-start,.edu-end')]
+        .find(input => !input.disabled && input.value.trim() && !ResumeProfile.date(input.value));
+    if (invalidDate) {
+        updateStatus('Use YYYY, YYYY-MM, or YYYY-MM-DD for dates, or leave them blank.', 'error');
+        invalidDate.focus();
+        return;
+    }
+    document.querySelectorAll('#experience-list .item-card').forEach(card => updateExperience(Number(card.dataset.index),card));
+    document.querySelectorAll('#education-list .item-card').forEach(card => updateEducation(Number(card.dataset.index),card));
+    profileData = ResumeProfile.profile(profileData);
+    profileData.languages = (profileData.languages || []).filter(entry =>
+        String(typeof entry === 'string' ? entry : entry.language || entry.name || '').trim());
+    renderLanguagesList(profileData.languages);
     // Gather form data
     profileData.contact = {
+        ...profileData.contact,
         firstName: document.getElementById('firstName').value,
         lastName: document.getElementById('lastName').value,
         email: document.getElementById('email').value,
@@ -221,6 +355,14 @@ async function saveProfile() {
         portfolio: document.getElementById('portfolio').value
     };
 
+    // Serialize custom fields
+    profileData.customFields = {};
+    document.querySelectorAll('.custom-field-row').forEach(row => {
+        const label = row.querySelector('.custom-field-label')?.value?.trim();
+        const value = row.querySelector('.custom-field-value')?.value?.trim();
+        if (label) profileData.customFields[label] = value || '';
+    });
+
     try {
         updateStatus('Saving...');
         await chrome.runtime.sendMessage({ type: 'UPDATE_PROFILE', data: profileData });
@@ -230,6 +372,29 @@ async function saveProfile() {
         console.error('Failed to save profile:', error);
         updateStatus('Save failed', 'error');
     }
+}
+
+// ========== Custom Fields ==========
+function renderCustomFieldsList(customFields) {
+    const container = document.getElementById('custom-fields-list');
+    container.innerHTML = '';
+    Object.entries(customFields || {}).forEach(([label, value]) => {
+        addCustomField(label, value);
+    });
+}
+
+function addCustomField(label = '', value = '') {
+    const container = document.getElementById('custom-fields-list');
+    const row = document.createElement('div');
+    row.className = 'custom-field-row';
+    row.style.cssText = 'display:flex; gap:8px; margin-bottom:8px; align-items:center;';
+    row.innerHTML = `
+        <input type="text" class="custom-field-label" placeholder="Label (e.g. Visa Status)" value="${label.replace(/"/g, '&quot;')}" style="flex:1;">
+        <input type="text" class="custom-field-value" placeholder="Value" value="${value.replace(/"/g, '&quot;')}" style="flex:2;">
+        <button type="button" class="btn btn-remove" title="Remove">×</button>
+    `;
+    row.querySelector('.btn-remove').addEventListener('click', () => row.remove());
+    container.appendChild(row);
 }
 
 // ========== Resume ==========
@@ -266,52 +431,73 @@ function initResume() {
         if (resumeInput.files[0]) handleResumeUpload(resumeInput.files[0]);
     });
 
+    // Retry button — resets to initial upload state
+    document.getElementById('retry-resume-btn').addEventListener('click', () => {
+        resetResumeUpload();
+        resumeInput.value = '';
+        resumeInput.click();
+    });
+
     // Import buttons
     document.getElementById('cancel-import').addEventListener('click', () => {
         parsedResumeData = null;
         document.getElementById('resume-preview').classList.add('hidden');
         showUploadStatus('');
+        document.getElementById('retry-resume-area').classList.add('hidden');
     });
 
     document.getElementById('confirm-import').addEventListener('click', confirmResumeImport);
 }
 
+function resetResumeUpload() {
+    document.getElementById('upload-area').classList.remove('hidden');
+    document.getElementById('upload-status').classList.add('hidden');
+    document.getElementById('retry-resume-area').classList.add('hidden');
+    document.getElementById('resume-preview').classList.add('hidden');
+    parsedResumeData = null;
+}
+
 async function handleResumeUpload(file) {
-    const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'];
     const validExtensions = ['pdf', 'docx', 'doc', 'txt'];
     const ext = file.name.split('.').pop().toLowerCase();
 
     if (!validExtensions.includes(ext)) {
-        showUploadStatus('Unsupported file type', 'error');
+        showUploadStatus('❌ Unsupported file type. Please use PDF, DOCX, or TXT.', 'error');
+        document.getElementById('retry-resume-area').classList.remove('hidden');
         return;
     }
 
-    showUploadStatus('Parsing resume...', 'loading');
+    // Show loading state
+    document.getElementById('upload-area').classList.add('hidden');
+    document.getElementById('retry-resume-area').classList.add('hidden');
+    showUploadStatus('⏳ Parsing resume... please wait.', 'loading');
 
     try {
-        // Read file content
         const text = await extractTextFromFile(file);
+        console.log('[Popup] Extracted resume text length:', text?.length);
 
         if (!text || text.length < 50) {
-            throw new Error('Could not extract text from file');
+            throw new Error('Could not extract text from file. Is it a scanned image PDF?');
         }
 
-        // Send to background for LLM parsing
         const response = await chrome.runtime.sendMessage({
             type: 'PARSE_RESUME',
             data: { text, fileName: file.name }
         });
 
         if (response.success && response.data) {
-            parsedResumeData = response.data;
+            parsedResumeData = ResumeProfile.profile(response.data);
             showResumePreview(parsedResumeData);
-            showUploadStatus('Resume parsed successfully!', 'success');
+            showUploadStatus('✅ Resume parsed successfully!', 'success');
+            document.getElementById('retry-resume-area').classList.remove('hidden');
         } else {
             throw new Error(response.error || 'Failed to parse resume');
         }
     } catch (error) {
         console.error('Resume upload error:', error);
-        showUploadStatus(error.message, 'error');
+        showUploadStatus(`❌ ${error.message}`, 'error');
+        document.getElementById('upload-area').classList.remove('hidden');
+        document.getElementById('retry-resume-area').classList.remove('hidden');
     }
 }
 
@@ -337,7 +523,7 @@ async function extractTextFromFile(file) {
                 for (let i = 1; i <= pdf.numPages; i++) {
                     const page = await pdf.getPage(i);
                     const textContent = await page.getTextContent();
-                    const pageText = textContent.items.map(item => item.str).join(' ');
+                    const pageText = ResumeProfile.pdfText(textContent.items);
                     textParts.push(pageText);
                 }
                 return textParts.join('\n\n');
@@ -403,24 +589,37 @@ function showResumePreview(data) {
     const preview = document.getElementById('resume-preview');
     const content = document.getElementById('preview-content');
 
-    let html = '<div style="font-size: 11px;">';
+    content.replaceChildren();
+    const add = (label, value) => {
+        const p = document.createElement('p');
+        const strong = document.createElement('strong');
+        strong.textContent = `${label}: `;
+        p.append(strong, document.createTextNode(String(value)));
+        content.appendChild(p);
+    };
 
     if (data.contact?.firstName || data.contact?.lastName) {
-        html += `<p><strong>Name:</strong> ${data.contact.firstName || ''} ${data.contact.lastName || ''}</p>`;
+        add('Name', `${data.contact.firstName || ''} ${data.contact.lastName || ''}`);
     }
-    if (data.contact?.email) html += `<p><strong>Email:</strong> ${data.contact.email}</p>`;
+    if (data.contact?.email) add('Email', data.contact.email);
     if (data.education?.length) {
-        html += `<p><strong>Education:</strong> ${data.education.length} entries</p>`;
+        add('Education', `${data.education.length} entries`);
     }
     if (data.experience?.length) {
-        html += `<p><strong>Experience:</strong> ${data.experience.length} entries</p>`;
+        add('Experience', `${data.experience.length} entries`);
+        data.experience.forEach((entry,index) => {
+            add(`Role ${index + 1}`, [entry.title,entry.company].filter(Boolean).join(' · ') || 'Not provided');
+            add('Dates', `${entry.startDate || 'Start not provided'} → ${entry.current ? 'Present' : entry.endDate || 'End not provided'}`);
+            const description = document.createElement('p');
+            description.style.whiteSpace = 'pre-wrap';
+            description.textContent = entry.description || 'Role description not provided';
+            content.appendChild(description);
+        });
     }
     if (data.skills?.length) {
-        html += `<p><strong>Skills:</strong> ${data.skills.slice(0, 5).join(', ')}${data.skills.length > 5 ? '...' : ''}</p>`;
+        add('Skills', `${data.skills.slice(0, 5).join(', ')}${data.skills.length > 5 ? '...' : ''}`);
     }
 
-    html += '</div>';
-    content.innerHTML = html;
     preview.classList.remove('hidden');
 }
 
@@ -451,11 +650,14 @@ async function confirmResumeImport() {
 }
 
 function mergeProfiles(existing, newData) {
+    newData = ResumeProfile.profile(newData);
     return {
+        ...existing,
         contact: { ...existing.contact, ...newData.contact },
         links: { ...existing.links, ...newData.links },
         education: newData.education?.length ? newData.education : existing.education,
         experience: newData.experience?.length ? newData.experience : existing.experience,
+        languages: newData.languages?.length ? newData.languages : existing.languages || [],
         skills: [...new Set([...(existing.skills || []), ...(newData.skills || [])])],
         certifications: newData.certifications || existing.certifications || [],
         projects: newData.projects || existing.projects || [],

@@ -10,6 +10,10 @@ export class LLMOrchestrator {
         this.maxRetries = 2;
         this.timeout = 30000;
         this.batchSize = 10;
+        this.mappingCache = new Map();
+        this.mappingInFlight = new Map();
+        this.providerCooldowns = new Map();
+        this.cacheTTL = 30 * 60 * 1000;
     }
 
     /**
@@ -21,16 +25,22 @@ export class LLMOrchestrator {
 
         const batches = this.createBatches(fields, this.batchSize);
         const allMappings = [];
+        const failures = [];
+        let completedBatches = 0;
 
         for (const batch of batches) {
             try {
                 const mappings = await this.mapFieldBatch(batch, profile, settings);
                 allMappings.push(...mappings);
+                completedBatches++;
             } catch (error) {
                 console.error('[LLM] Batch mapping failed:', error);
+                failures.push(error);
+                if (error.status === 429) break;
             }
         }
 
+        if (!completedBatches && failures.length) throw failures[0];
         return allMappings;
     }
 
@@ -38,18 +48,53 @@ export class LLMOrchestrator {
      * Map a single batch of fields
      */
     async mapFieldBatch(fields, profile, settings) {
+        // Stable IDs let cached answers survive page refreshes and different tabs.
+        const canonical = fields.map((field, index) => ({...field, id:`field-${index}`}));
+        const key = JSON.stringify([settings.provider, settings.model, settings.apiKey, profile,
+            canonical.map(({id, label, hints, type, options, optionDetails, context, constraints, isLongForm,category}) => ({id, label, hints, type, options, optionDetails, context, constraints, isLongForm,category}))]);
+        let cached = this.mappingCache.get(key);
+        if (cached && Date.now() - cached.time >= this.cacheTTL) {
+            this.mappingCache.delete(key);
+            cached = null;
+        }
+        let mappings;
+        if (cached) mappings = cached.mappings;
+        else {
+            let request = this.mappingInFlight.get(key);
+            if (!request) {
+                request = this.requestFieldBatch(canonical, profile, settings);
+                this.mappingInFlight.set(key, request);
+            }
+            try {
+                mappings = await request;
+                this.mappingCache.set(key, {time:Date.now(), mappings});
+                if (this.mappingCache.size > 50) this.mappingCache.delete(this.mappingCache.keys().next().value);
+            } finally { this.mappingInFlight.delete(key); }
+        }
+        return mappings.flatMap(mapping => {
+            const index = canonical.findIndex(field => field.id === mapping.fieldId);
+            return index < 0 ? [] : [{...mapping, fieldId:fields[index].id}];
+        });
+    }
+
+    async requestFieldBatch(fields, profile, settings) {
         const prompt = this.buildFieldMappingPrompt(fields, profile);
         const response = await this.callLLM(prompt, settings);
 
-        if (!response) return [];
+        if (!response) throw new Error('AI returned an empty response; check provider settings and connection');
 
         try {
             const parsed = this.extractJSON(response);
-            if (!parsed) return [];
-            return Array.isArray(parsed) ? parsed : parsed.mappings || [];
+            if (!parsed) throw new Error('AI response was not valid JSON');
+            const mappings = Array.isArray(parsed) ? parsed : parsed.mappings;
+            if (!Array.isArray(mappings)) throw new Error('AI response did not contain a mappings array');
+            return mappings.filter(mapping => {
+                const field = fields.find(field=>field.id === mapping.fieldId);
+                return field && (!globalThis.FieldPolicy || globalThis.FieldPolicy.validate(field,mapping,profile));
+            });
         } catch (error) {
             console.error('[LLM] Failed to parse mapping response:', error);
-            return [];
+            throw error;
         }
     }
 
@@ -139,7 +184,13 @@ export class LLMOrchestrator {
             label: f.label,
             hints: f.hints?.slice(0, 5) || [],
             type: f.type,
-            options: f.options?.slice(0, 20) || []
+            options: f.options || [],
+            optionDetails:f.optionDetails || [],
+            placeholder:f.placeholder || '',
+            context:f.context || '',
+            constraints:f.constraints || {},
+            isLongForm:!!f.isLongForm,
+            category:f.category || null
         }));
 
         return FIELD_MAPPING_PROMPT
@@ -195,6 +246,14 @@ export class LLMOrchestrator {
         const { apiKey, provider, model } = settings;
 
         if (!apiKey) return null;
+        const cooldownKey = JSON.stringify([provider, model, apiKey]);
+        const cooldown = this.providerCooldowns.get(cooldownKey);
+        if (cooldown && Date.now() < cooldown.until) {
+            const error = new Error(`AI rate limit: wait ${Math.ceil((cooldown.until-Date.now())/1000)} seconds before retrying`);
+            error.status = 429;
+            error.retryAfterMs = cooldown.until-Date.now();
+            throw error;
+        }
 
         for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
             try {
@@ -207,8 +266,15 @@ export class LLMOrchestrator {
                 }
             } catch (error) {
                 console.error(`[LLM] Attempt ${attempt + 1} failed:`, error);
-                if (attempt === this.maxRetries) return null;
-                await this.delay(1000 * (attempt + 1));
+                if (error.status === 429) {
+                    const retryAfterMs = Math.max(60000, error.retryAfterMs || 0);
+                    this.providerCooldowns.set(cooldownKey, {until:Date.now()+retryAfterMs});
+                    error.retryAfterMs = retryAfterMs;
+                    throw error;
+                }
+                // Invalid requests/credentials need correction, not more calls.
+                if ((error.status && error.status < 500 && error.status !== 408) || attempt === this.maxRetries) throw error;
+                await this.delay(1000 * (2 ** attempt) + Math.floor(Math.random()*250));
             }
         }
 
@@ -241,7 +307,9 @@ export class LLMOrchestrator {
             clearTimeout(timeoutId);
 
             if (!response.ok) {
-                throw new Error(`OpenAI API error: ${response.status}`);
+                const error = new Error(`OpenAI API error: ${response.status}`);
+                error.status = response.status;
+                throw error;
             }
 
             const data = await response.json();
@@ -277,7 +345,9 @@ export class LLMOrchestrator {
             clearTimeout(timeoutId);
 
             if (!response.ok) {
-                throw new Error(`Anthropic API error: ${response.status}`);
+                const error = new Error(`Anthropic API error: ${response.status}`);
+                error.status = response.status;
+                throw error;
             }
 
             const data = await response.json();
@@ -318,7 +388,14 @@ export class LLMOrchestrator {
             clearTimeout(timeoutId);
 
             if (!response.ok) {
-                throw new Error(`Gemini API error: ${response.status}`);
+                const body = await response.json().catch(() => ({}));
+                const error = new Error(`Gemini API error: ${response.status}${body.error?.message ? ` — ${body.error.message}` : ''}`);
+                error.status = response.status;
+                const retry = body.error?.details?.find(detail => detail.retryDelay)?.retryDelay;
+                const header = response.headers?.get('Retry-After');
+                const headerMs = header ? (/^\d+(\.\d+)?$/.test(header) ? Number(header)*1000 : Math.max(0, Date.parse(header)-Date.now())) : 0;
+                error.retryAfterMs = Math.max(parseFloat(retry || '0')*1000, headerMs || 0);
+                throw error;
             }
 
             const data = await response.json();

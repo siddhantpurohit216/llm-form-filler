@@ -117,6 +117,7 @@ const DEFAULT_PROFILE = {
   },
   education: [],
   experience: [],
+  languages: [],
   skills: [],
   certifications: [],
   projects: [],

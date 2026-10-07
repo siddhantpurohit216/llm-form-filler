@@ -8,12 +8,87 @@ class InlineUI {
         this.activeModals = new Map();
         this.tooltips = new Map();
         this.initialized = false;
+        this.fieldOverlays = new Map();
+        this.activeField = null;
+        this.positionFrame = null;
     }
 
     init() {
         if (this.initialized) return;
         this.initialized = true;
+        this.reposition = () => {
+            if (this.positionFrame !== null) return;
+            this.positionFrame = requestAnimationFrame(() => {
+                this.positionFrame = null;
+                for (const [element, entry] of this.fieldOverlays) {
+                    if (!element.isConnected) this.removeFieldUI(element);
+                    else if (this.activeField === element) this.positionOverlay(entry.overlay, element);
+                }
+            });
+        };
+        window.addEventListener('scroll', this.reposition, true);
+        window.addEventListener('resize', this.reposition);
+        this.layoutObserver = new ResizeObserver(this.reposition);
+        this.layoutObserver.observe(document.body);
         console.log('[InlineUI] Initialized');
+    }
+
+    showPageStatus(text, onAutofill) {
+        if (window.top !== window) return;
+        this.pagePanel = document.createElement('aside');
+        this.pagePanel.className = 'sja-page-status';
+        this.pagePanel.dataset.sjaUi = 'true';
+        const header = document.createElement('div');
+        header.className = 'sja-panel-header';
+        const brand = document.createElement('div');
+        brand.className = 'sja-panel-brand';
+        const mark = document.createElement('span');
+        mark.className = 'sja-brand-mark';
+        mark.textContent = '✓';
+        const title = document.createElement('strong');
+        title.textContent = 'Smart Job Autofill';
+        brand.append(mark, title);
+        const collapse = document.createElement('button');
+        collapse.className = 'sja-panel-toggle';
+        collapse.type = 'button';
+        collapse.textContent = '−';
+        collapse.setAttribute('aria-label', 'Minimize autofill panel');
+        collapse.setAttribute('aria-expanded', 'true');
+        collapse.addEventListener('click', () => {
+            const minimized = this.pagePanel.classList.toggle('sja-panel-minimized');
+            collapse.textContent = minimized ? '+' : '−';
+            collapse.setAttribute('aria-expanded', String(!minimized));
+            collapse.setAttribute('aria-label', minimized ? 'Expand autofill panel' : 'Minimize autofill panel');
+        });
+        header.append(brand, collapse);
+        const body = document.createElement('div');
+        body.className = 'sja-panel-body';
+        this.pageStatus = document.createElement('div');
+        this.pageStatus.setAttribute('role', 'status');
+        this.pageStatus.textContent = text;
+        this.pageButton = document.createElement('button');
+        this.pageButton.className = 'sja-panel-autofill';
+        this.pageButton.type = 'button';
+        this.pageButton.textContent = 'Autofill this page';
+        this.pageButton.addEventListener('click', onAutofill);
+        const hint = document.createElement('p');
+        hint.className = 'sja-panel-hint';
+        hint.textContent = 'Hover a field to edit, save, or use AI.';
+        body.append(this.pageStatus, this.pageButton, hint);
+        this.pagePanel.append(header, body);
+        document.body.appendChild(this.pagePanel);
+    }
+
+    updatePageStatus(text, busy = false) {
+        if (this.pageStatus) this.pageStatus.textContent = text;
+        this.setPageBusy(busy);
+    }
+
+    setPageBusy(busy) {
+        if (this.pageButton) {
+            this.pageButton.disabled = busy;
+            this.pageButton.textContent = busy ? 'Filling…' : 'Autofill this page';
+        }
     }
 
     getConfidenceLevel(matchData) {
@@ -25,100 +100,105 @@ class InlineUI {
     }
 
     addFieldIndicators(element, matchData) {
-        try {
-            if (!element || !element.isConnected) return;
-            if (element.dataset.sjaProcessed) return;
-            element.dataset.sjaProcessed = 'true';
-            element.dataset.sjaFieldId = matchData.fieldId || element.id;
-
-            // Create a floating overlay anchored to the element's position
-            // NOTE: We NEVER move or wrap React's elements — we float independently
-            const overlay = this.createFloatingOverlay(element, matchData);
-            document.body.appendChild(overlay);
-            this.positionOverlay(overlay, element);
-
-            // Reposition on scroll/resize
-            const reposition = () => {
-                if (!element.isConnected) {
-                    overlay.remove();
-                    window.removeEventListener('scroll', reposition, true);
-                    return;
-                }
-                this.positionOverlay(overlay, element);
-            };
-            window.addEventListener('scroll', reposition, true);
-            window.addEventListener('resize', reposition);
-
-        } catch (e) {
-            // Silently skip — unexpected DOM state
+        if (!element?.isConnected) return;
+        matchData = {...matchData, validationError:this.hasValidationError(element)};
+        const existing = this.fieldOverlays.get(element);
+        if (existing) {
+            this.updateConfidenceIndicator(element, matchData);
+            return;
         }
+        element.dataset.sjaProcessed = 'true';
+        element.dataset.sjaFieldId = matchData.fieldId || element.dataset.sjaFieldId || element.id;
+        const overlay = this.createFloatingOverlay(element, matchData);
+        document.body.appendChild(overlay);
+        const show = () => {
+            this.updateConfidenceIndicator(element, matchData);
+            if (this.activeField && this.activeField !== element) {
+                const previous = this.fieldOverlays.get(this.activeField);
+                if (previous) previous.overlay.hidden = true;
+            }
+            this.activeField = element;
+            overlay.hidden = false;
+            this.positionOverlay(overlay, element);
+        };
+        let hideTimer;
+        const hide = () => {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => {
+                if (document.activeElement === element || overlay.contains(document.activeElement) || overlay.matches(':hover') || element.matches(':hover')) return;
+                overlay.hidden = true;
+                if (this.activeField === element) this.activeField = null;
+            }, 160);
+        };
+        element.addEventListener('focus', show);
+        element.addEventListener('mouseenter', show);
+        element.addEventListener('blur', hide);
+        element.addEventListener('mouseleave', hide);
+        overlay.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+        overlay.addEventListener('mouseleave', hide);
+        overlay.addEventListener('focusout', hide);
+        overlay.addEventListener('keydown', event => {
+            if (event.key === 'Escape') { overlay.hidden = true; this.activeField = null; }
+        });
+        this.fieldOverlays.set(element, {overlay, cleanup:() => {
+            clearTimeout(hideTimer);
+            element.removeEventListener('focus', show);
+            element.removeEventListener('mouseenter', show);
+            element.removeEventListener('blur', hide);
+            element.removeEventListener('mouseleave', hide);
+        }});
+        this.layoutObserver?.observe(element);
     }
 
-    /**
-     * Create a floating overlay that sits on top of the field without touching it
-     */
     createFloatingOverlay(element, matchData) {
         const overlay = document.createElement('div');
         overlay.className = 'sja-field-overlay';
-        overlay.style.cssText = `
-            position: fixed;
-            z-index: 2147483647;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            pointer-events: none;
-        `;
-
-        const indicator = this.createConfidenceIndicator(matchData);
-        indicator.style.pointerEvents = 'auto';
-        overlay.appendChild(indicator);
-
-        const actions = this.createActionButtons(element, matchData, overlay);
-        overlay.appendChild(actions);
-        this.addTooltip(indicator, matchData);
-
-        // Show/hide action buttons on element focus/hover
-        element.addEventListener('focus', () => actions.style.display = 'flex');
-        element.addEventListener('blur', () => setTimeout(() => actions.style.display = 'none', 200));
-        element.addEventListener('mouseenter', () => actions.style.display = 'flex');
-        element.addEventListener('mouseleave', () => setTimeout(() => {
-            if (!actions.matches(':hover')) actions.style.display = 'none';
-        }, 200));
-        actions.addEventListener('mouseenter', () => actions.style.display = 'flex');
-        actions.addEventListener('mouseleave', () => actions.style.display = 'none');
-
+        overlay.dataset.sjaUi = 'true';
+        overlay.hidden = true;
+        overlay.setAttribute('role', 'toolbar');
+        overlay.setAttribute('aria-label', `Autofill actions for ${matchData.label || 'field'}`);
+        overlay.append(this.createConfidenceIndicator(matchData), this.createActionButtons(element, matchData, overlay));
         return overlay;
     }
 
     positionOverlay(overlay, element) {
-        try {
-            const rect = element.getBoundingClientRect();
-            overlay.style.top = `${rect.top + window.scrollY + 4}px`;
-            overlay.style.left = `${rect.right + window.scrollX - 80}px`;
-            // Revert to fixed coords without scroll offset for fixed-position overlay
-            overlay.style.top = `${rect.top + 4}px`;
-            overlay.style.left = `${rect.right - 80}px`;
-        } catch (e) { /* ignore */ }
+        const rect = element.getBoundingClientRect();
+        // Off-screen fields must never produce controls stacked on a screen edge.
+        if (!element.isConnected || !isElementVisible(element) || rect.bottom <= 0 ||
+            rect.top >= window.innerHeight || rect.right <= 0 || rect.left >= window.innerWidth) {
+            overlay.hidden = true;
+            return;
+        }
+        const width = overlay.getBoundingClientRect().width || 280;
+        const height = overlay.getBoundingClientRect().height || 40;
+        const left = Math.max(8, Math.min(rect.right-width, window.innerWidth-width-8));
+        const below = rect.bottom+6;
+        const top = below+height < window.innerHeight-8 ? below : Math.max(8, rect.top-height-6);
+        overlay.style.left = `${left}px`;
+        overlay.style.top = `${top}px`;
     }
-
-    // REMOVED: createFieldWrapper — we no longer move/wrap elements
 
     createConfidenceIndicator(matchData) {
         const indicator = document.createElement('span');
         indicator.className = 'sja-confidence-indicator';
-        const level = this.getConfidenceLevel(matchData);
+        const level = matchData.validationError ? 'uncertain' : this.getConfidenceLevel(matchData);
         indicator.classList.add(`sja-confidence-${level}`);
-        const icons = { exact: '🟢', inferred: '🟡', uncertain: '🔴' };
-        indicator.textContent = icons[level] || '⚪';
-        indicator.setAttribute('role', 'img');
-        indicator.setAttribute('aria-label', `Confidence: ${level}`);
+        const labels = {exact:'✓ Filled', inferred:'AI draft', uncertain:'Review'};
+        indicator.textContent = matchData.validationError ? 'Needs review' : labels[level];
+        indicator.setAttribute('title', matchData.reason || 'Filled from your saved profile');
         return indicator;
+    }
+
+    hasValidationError(element) {
+        return typeof autofillEngine !== 'undefined'
+            ? autofillEngine.hasFieldError?.(element)
+            : element.getAttribute('aria-invalid') === 'true';
     }
 
     createActionButtons(element, matchData, overlay) {
         const container = document.createElement('div');
         container.className = 'sja-actions-container';
-        container.style.cssText = 'display:none; pointer-events: auto;';
+        container.style.cssText = 'pointer-events: auto;';
 
         // Edit button
         container.appendChild(this.createButton('✏️', 'Edit', () => {
@@ -153,7 +233,7 @@ class InlineUI {
         if (label === 'Generate with AI') {
             button.className = 'sja-action-btn sja-btn-generate';
         }
-        button.textContent = icon;
+        button.textContent = ({'Generate with AI':'AI', 'Save to Profile':'Save', 'Regenerate':'Retry'})[label] || label;
         button.setAttribute('aria-label', label);
         button.setAttribute('title', label);
         button.addEventListener('click', (e) => {
@@ -199,7 +279,8 @@ class InlineUI {
                 data: { fieldId: matchData.fieldId, fieldInfo: { label: matchData.label, type: matchData.type }, regenerate: true }
             });
             if (response?.value) {
-                autofillEngine.fill(element, response.value, matchData.type || 'text');
+                const result = await autofillEngine.fill(element, response.value, matchData.type || 'text');
+                if (!result.success) throw new Error('Could not fill this field');
                 sessionCache.updateValue(matchData.fieldId, response.value, FIELD_SOURCE.LLM);
                 this.updateConfidenceIndicator(element, { ...matchData, confidence: response.confidence || 0.8, source: FIELD_SOURCE.LLM });
             }
@@ -224,6 +305,7 @@ class InlineUI {
         const fieldLabel = matchData.label || element.placeholder || 'this field';
 
         const modal = document.createElement('div');
+        modal.dataset.sjaUi = 'true';
         modal.className = 'sja-modal-overlay';
         modal.innerHTML = `<div class="sja-modal sja-generate-modal">
       <div class="sja-modal-header">
@@ -291,7 +373,8 @@ class InlineUI {
 
                 if (response?.value) {
                     // Fill the field using the autofill engine
-                    autofillEngine.fill(element, response.value, matchData.type || 'text');
+                    const result = await autofillEngine.fill(element, response.value, matchData.type || 'text');
+                if (!result.success) throw new Error('Could not fill this field');
 
                     // Update cache
                     sessionCache.set(matchData.fieldId || element.id, {
@@ -342,20 +425,17 @@ class InlineUI {
     // ========== Existing UI Methods ==========
 
     updateConfidenceIndicator(element, matchData) {
-        const wrapper = element.closest('.sja-field-wrapper');
-        if (!wrapper) return;
-        const indicator = wrapper.querySelector('.sja-confidence-indicator');
+        const overlay = this.fieldOverlays.get(element)?.overlay;
+        const indicator = overlay?.querySelector('.sja-confidence-indicator');
         if (!indicator) return;
-        indicator.classList.remove('sja-confidence-exact', 'sja-confidence-inferred', 'sja-confidence-uncertain');
-        const level = this.getConfidenceLevel(matchData);
-        indicator.classList.add(`sja-confidence-${level}`);
-        const icons = { exact: '🟢', inferred: '🟡', uncertain: '🔴' };
-        indicator.textContent = icons[level] || '⚪';
+        const next = this.createConfidenceIndicator({...matchData, validationError:this.hasValidationError(element)});
+        indicator.replaceWith(next);
     }
 
     showSaveModal(element, matchData) {
         this.closeAllModals();
         const modal = document.createElement('div');
+        modal.dataset.sjaUi = 'true';
         modal.className = 'sja-modal-overlay';
         modal.innerHTML = `<div class="sja-modal">
       <div class="sja-modal-header"><h3>💾 Save to Profile</h3><button class="sja-modal-close">&times;</button></div>
@@ -457,23 +537,31 @@ class InlineUI {
     }
 
     removeFieldUI(element) {
-        const wrapper = element.closest('.sja-field-wrapper');
-        if (wrapper?.parentNode) { wrapper.parentNode.insertBefore(element, wrapper); wrapper.remove(); }
+        const entry = this.fieldOverlays.get(element);
+        entry?.cleanup();
+        entry?.overlay.remove();
+        this.fieldOverlays.delete(element);
+        this.layoutObserver?.unobserve(element);
+        if (this.activeField === element) this.activeField = null;
         element.classList.remove('sja-autofilled', 'sja-autofilled-exact', 'sja-autofilled-inferred', 'sja-autofilled-uncertain');
         delete element.dataset.sjaProcessed;
-        delete element.dataset.sjaFieldId;
     }
 
     cleanup() {
         this.closeAllModals();
-        this.tooltips.forEach(tooltip => { if (tooltip.parentNode) tooltip.parentNode.removeChild(tooltip); });
+        for (const element of this.fieldOverlays.keys()) this.removeFieldUI(element);
+        this.tooltips.forEach(tooltip => tooltip.remove());
         this.tooltips.clear();
-        document.querySelectorAll('.sja-field-wrapper').forEach(wrapper => {
-            const input = wrapper.querySelector('input, select, textarea, [contenteditable]');
-            if (input) this.removeFieldUI(input);
-        });
-        document.querySelectorAll('.sja-toast').forEach(t => t.remove());
+        this.layoutObserver?.disconnect();
+        window.removeEventListener('scroll', this.reposition, true);
+        window.removeEventListener('resize', this.reposition);
+        if (this.positionFrame !== null) cancelAnimationFrame(this.positionFrame);
+        this.positionFrame = null;
+        this.pagePanel?.remove();
+        document.querySelectorAll('.sja-toast').forEach(toast => toast.remove());
+        this.initialized = false;
     }
+
 }
 
 const inlineUI = new InlineUI();
