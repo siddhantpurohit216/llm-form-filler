@@ -280,7 +280,7 @@ class InlineUI {
             throw new Error('This field is no longer editable.');
         }
         const field = fieldExtractor.refreshField(element);
-        const optionDetails = await autofillEngine.captureFieldOptions(field);
+        const optionDetails = await (globalThis.activeAdapter ? activeAdapter.readOptions(field) : autofillEngine.captureFieldOptions(field));
         return this.describeAIField(field, optionDetails);
     }
 
@@ -292,6 +292,8 @@ class InlineUI {
             context: String(field.nearbyText || '').slice(0, 2000),
             options: optionDetails.map(option => option.label), optionDetails,
             constraints: field.constraints, isLongForm: field.isLongForm,
+            adapter: field.adapter, recordType: field.recordType, recordIndex: field.recordIndex,
+            country: field.country, employer: field.employer, language: field.language,
             currentValue: fieldExtractor.getCurrentValue(element),
             category: globalThis.FieldPolicy?.category(field),
             pageContext: {title: document.title, url: location.origin + location.pathname}
@@ -333,8 +335,8 @@ class InlineUI {
             String(option.value) === String(response.value) || option.label === String(response.value));
         const value = element.tagName !== 'SELECT' && fieldInfo.type !== 'radio' && option
             ? option.label : response.value;
-        const result = await autofillEngine.fill(element, value, fieldInfo.type);
-        if (!result.success) {
+        const result = await (globalThis.FieldPipeline ? FieldPipeline.fill(element,value,fieldInfo.type) : autofillEngine.fill(element, value, fieldInfo.type));
+        if (!result.success && !result.entered) {
             throw new Error('Could not confirm the field selection. Review its current value.');
         }
         // Reading validity avoids firing another `invalid` event. Frameworks
@@ -343,9 +345,9 @@ class InlineUI {
         while (element.isConnected && element.willValidate && element.validity?.valid === false && Date.now() - started < 300) {
             await new Promise(resolve => setTimeout(resolve, 25));
         }
-        const needsReview = element.willValidate && element.validity?.valid === false;
+        const needsReview = (element.willValidate && element.validity?.valid === false) || result.verified === false;
         const validationMessage = needsReview ? element.validationMessage : '';
-        const data = {...fieldInfo, fieldId: fieldInfo.id, value: response.value,
+        const data = {...fieldInfo, fieldId: fieldInfo.id, value: response.value, intent:response.intent, qualifiers:response.qualifiers,
             confidence: response.confidence, source: FIELD_SOURCE.LLM, reason: response.reason,
             validationError: !!needsReview};
         sessionCache.set(fieldInfo.id, data);
@@ -524,9 +526,14 @@ class InlineUI {
 
     async saveToProfile(element, profilePath) {
         try {
+            const info=await this.buildAIFieldInfo(element);
+            const current=fieldExtractor.getCurrentValue(element);
+            const option=info.optionDetails.find(option=>String(option.value)===String(current) || option.label===String(current));
+            const cached=sessionCache.get(info.id);
             const response = await chrome.runtime.sendMessage({
                 type: MESSAGE_TYPES.SAVE_TO_PROFILE,
-                data: { path: profilePath, value: element.value || element.textContent || '' }
+                data: {path:profilePath,value:element.type==='checkbox'?element.checked:option?.label || current,
+                    fieldInfo:info,intent:cached?.intent,qualifiers:cached?.qualifiers}
             });
             if (response?.success) {
                 sessionCache.markAsSaved(element.dataset.sjaFieldId);

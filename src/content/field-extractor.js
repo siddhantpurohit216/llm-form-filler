@@ -26,17 +26,17 @@ class FieldExtractor {
      * Extract all form fields from the page
      * @returns {Array} Array of FieldDescriptor objects
      */
-    extractAllFields() {
+    extractAllFields(root = document) {
         this.extractedFields.clear();
         const fields = [];
         const allElements = new Set();
 
         // Find all elements matching universal selectors
-        const found = document.querySelectorAll(FieldExtractor.FIELD_SELECTORS);
+        const found = root.querySelectorAll(FieldExtractor.FIELD_SELECTORS);
         found.forEach(el => allElements.add(el));
 
         // Also check Shadow DOMs
-        this.findShadowDOMInputs(document.body, allElements);
+        this.findShadowDOMInputs(root === document ? document.body : root, allElements);
 
         let index = 0;
         allElements.forEach((element) => {

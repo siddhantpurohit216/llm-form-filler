@@ -14,26 +14,66 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initPageActions() {
     const summary = document.getElementById('page-summary');
     const button = document.getElementById('popup-autofill');
+    const remember = document.getElementById('remember-site');
     let tab;
+    let enabled = false;
     try {
-        [tab] = await chrome.tabs.query({active:true, currentWindow:true});
-        const status = await chrome.tabs.sendMessage(tab.id, {type:'GET_FORM_STATUS'});
-        summary.textContent = status.hasForm ? `${status.fieldCount} application fields detected` : 'Open an application form to get started';
-        button.disabled = !status.hasForm;
-    } catch {
-        summary.textContent = 'Open or refresh an application page';
+        [tab] = await chrome.tabs.query({active:true,currentWindow:true});
+        if (!/^https?:\/\//i.test(tab?.url || '')) throw new Error('Open a regular website to enable autofill');
+        try {
+            const status = await chrome.runtime.sendMessage({type:'GET_ACTIVE_FORM_STATUS',data:{tabId:tab.id}});
+            enabled = !!status?.frames?.length;
+            if (!enabled) throw new Error('Not active');
+            summary.textContent = status.hasForm ? `${status.fieldCount} fields detected · ${status.adapter || 'This site'}` : 'No editable fields on this step';
+        } catch {
+            summary.textContent = AdapterRegistry.byURL(tab.url) ? 'Enable autofill when the application is open' : 'Autofill is inactive on this site';
+        }
+        button.textContent = enabled ? 'Autofill' : 'Enable autofill';
+        button.disabled = false;
+        remember.disabled = false;
+    } catch (error) {
+        summary.textContent = error.message;
         button.disabled = true;
+        remember.disabled = true;
     }
-    button.addEventListener('click', async () => {
+    button.addEventListener('click',async()=>{
         button.disabled = true;
         button.textContent = 'Filling…';
         try {
-            const response = await chrome.tabs.sendMessage(tab.id, {type:'TRIGGER_AUTOFILL'});
-            if (!response?.success) throw new Error('Autofill failed');
-            summary.textContent = 'Done. Review your answers on the page.';
-        } catch { summary.textContent = 'Refresh the application page and try again'; }
-        finally { button.disabled = false; button.textContent = 'Autofill'; }
+            if (!enabled) {
+                const activation = await chrome.runtime.sendMessage({type:'ACTIVATE_AUTOFILL',data:{tabId:tab.id,manual:true}});
+                if (!activation?.success) throw new Error(activation?.error || 'Could not enable autofill');
+            }
+            enabled = true;
+            const response = await chrome.runtime.sendMessage({type:'TRIGGER_ACTIVE_AUTOFILL',data:{tabId:tab.id}});
+            if (!response?.success) throw new Error(response?.error || 'Autofill failed');
+            summary.textContent = response.fieldCount ? 'Done. Review your answers on the page.' : 'No editable fields on this page';
+        } catch (error) { summary.textContent = error.message; }
+        finally { button.disabled = false; button.textContent = enabled?'Autofill':'Enable autofill'; }
     });
+    remember.addEventListener('click',async()=>{
+        const origin = new URL(tab.url).origin;
+        try {
+            const granted = await chrome.permissions.request({origins:[origin+'/*']});
+            if (!granted) {summary.textContent='Site access was not granted';return;}
+            const response = await chrome.runtime.sendMessage({type:'REMEMBER_AUTOFILL_SITE',data:{origin}});
+            if (!response?.success) throw new Error(response?.error || 'Could not remember this site');
+            summary.textContent = 'Automatic activation enabled for application forms on this site';
+        } catch (error) {summary.textContent=error.message;}
+    });
+    const controls = document.getElementById('adapter-controls');
+    const {disabledAdapters=[]} = await chrome.storage.local.get('disabledAdapters');
+    for (const platform of AdapterRegistry.platforms) {
+        const label = document.createElement('label');label.className='preference-check';
+        const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=!disabledAdapters.includes(platform.id);
+        label.append(checkbox,document.createTextNode(platform.name));controls.appendChild(label);
+        checkbox.addEventListener('change',async()=>{
+            const saved=await chrome.storage.local.get('disabledAdapters');
+            const disabled=new Set(saved.disabledAdapters || []);
+            checkbox.checked?disabled.delete(platform.id):disabled.add(platform.id);
+            await chrome.storage.local.set({disabledAdapters:[...disabled]});
+        });
+    }
 }
 
 // ========== Tabs ==========
@@ -80,10 +120,34 @@ function getDefaultProfile() {
     };
 }
 
+function populateWorkdayQuestions(preferences={}) {
+    preferences=preferences || {};
+    document.getElementById('workday-questions-enabled').checked=!!preferences.enabled;
+    document.getElementById('workday-question-employer').value=preferences.employer || '';
+    const container=document.getElementById('workday-question-answers');container.replaceChildren();
+    for(const category of globalThis.WorkdayQuestions?.registry || []) {
+        const row=document.createElement('div');row.className='form-group';
+        const label=document.createElement('label');label.textContent=category.label;
+        const select=document.createElement('select');select.id='workday-answer-'+category.key;label.htmlFor=select.id;
+        for(const [value,text] of [['','Answer manually'],['No','No'],['Yes','Yes']]) {
+            const option=document.createElement('option');option.value=value;option.textContent=text;select.appendChild(option);
+        }
+        const answer=preferences.answers?.[category.key];select.value=answer===true?'Yes':answer===false?'No':'';
+        row.append(label,select);container.appendChild(row);
+    }
+}
+
 function populateProfileForm(profile) {
+    populateWorkdayQuestions(profile.workdayQuestions);
+    document.getElementById('notice-period').value = profile.employment?.noticePeriod?.amount ?? '';
+    document.getElementById('notice-unit').value = profile.employment?.noticePeriod?.unit || 'days';
+    document.getElementById('earliest-start-date').value = profile.employment?.earliestStartDate || '';
+    document.getElementById('notice-start-date').value = profile.employment?.noticeStartDate || '';
+    document.getElementById('notice-start-today').checked = profile.employment?.noticeStartMode === 'today';
     const defaults = profile.applicationDefaults || {};
     document.getElementById('application-country').value = defaults.applicationCountry || '';
     document.getElementById('work-eligibility').value = defaults.workEligibility?.[defaults.applicationCountry] || '';
+    document.getElementById('work-authorization-basis').value=defaults.workAuthorizationBasis?.[defaults.applicationCountry] || '';
     document.getElementById('previous-employment').value = defaults.previouslyEmployed === true ? 'Yes' : 'No';
     document.getElementById('disability-answer').value = defaults.disability || '';
     // Contact
@@ -112,6 +176,12 @@ function populateProfileForm(profile) {
 }
 
 function setupProfileListeners() {
+    document.getElementById('intel-question-preset').addEventListener('click',async()=>{
+        populateWorkdayQuestions({enabled:true,employer:'Intel',answers:{familyRelationship:false,restrictiveAgreement:false,ipOwnership:false,secondaryEmployment:false,governmentRelationship:false,accuracyAcknowledgement:true}});
+        document.getElementById('application-country').value='India';
+        document.getElementById('work-eligibility').value='Yes';
+        await saveProfile();
+    });
     // Save button
     document.getElementById('save-profile').addEventListener('click', saveProfile);
 
@@ -321,12 +391,26 @@ async function saveProfile() {
             return;
         }
     }
+    const period = document.getElementById('notice-period');
+    if (!period.checkValidity()) {updateStatus('Enter a valid notice period','error');period.focus();return;}
+    profileData.employment = {...profileData.employment,
+        noticePeriod:period.value === '' ? null : {amount:Number(period.value),unit:document.getElementById('notice-unit').value},
+        earliestStartDate:document.getElementById('earliest-start-date').value || null,
+        noticeStartDate:document.getElementById('notice-start-date').value || null,
+        noticeStartMode:document.getElementById('notice-start-today').checked?'today':null};
     const country = document.getElementById('application-country').value.trim();
     profileData.applicationDefaults = {...profileData.applicationDefaults,
         applicationCountry:country,
         workEligibility:{...profileData.applicationDefaults?.workEligibility,[country]:document.getElementById('work-eligibility').value},
+        workAuthorizationBasis:{...profileData.applicationDefaults?.workAuthorizationBasis,[country]:document.getElementById('work-authorization-basis').value.trim()},
         previouslyEmployed:document.getElementById('previous-employment').value === 'Yes',
         disability:document.getElementById('disability-answer').value};
+    profileData.workdayQuestions={enabled:document.getElementById('workday-questions-enabled').checked,
+        employer:document.getElementById('workday-question-employer').value.trim(),
+        answers:Object.fromEntries((globalThis.WorkdayQuestions?.registry || []).map(category=>{
+            const value=document.getElementById('workday-answer-'+category.key).value;
+            return [category.key,value===''?null:value==='Yes'];
+        }))};
     const invalidDate = [...document.querySelectorAll('.exp-start,.exp-end,.edu-start,.edu-end')]
         .find(input => !input.disabled && input.value.trim() && !ResumeProfile.date(input.value));
     if (invalidDate) {
@@ -357,11 +441,20 @@ async function saveProfile() {
 
     // Serialize custom fields
     profileData.customFields = {};
+    profileData.customFieldMeta = {};
+    let invalidCustom;
     document.querySelectorAll('.custom-field-row').forEach(row => {
-        const label = row.querySelector('.custom-field-label')?.value?.trim();
-        const value = row.querySelector('.custom-field-value')?.value?.trim();
-        if (label) profileData.customFields[label] = value || '';
+        const label = row.querySelector('.custom-field-label').value.trim();
+        const value = row.querySelector('.custom-field-value').value.trim();
+        if (!label) return;
+        const meta = {intent:row.querySelector('.custom-field-intent').value,type:row.querySelector('.custom-field-type').value,
+            unit:row.querySelector('.custom-field-unit').value,scope:row.querySelector('.custom-field-scope').value.trim()};
+        if (value && SemanticResolver.parse(value,meta.type,meta.unit)==null) invalidCustom=label;
+        if (Object.hasOwn(profileData.customFields,label)) invalidCustom=label+' (duplicate label)';
+        profileData.customFields[label]=value;
+        profileData.customFieldMeta[label]=meta;
     });
+    if (invalidCustom) {updateStatus(`Check the saved answer and type for ${invalidCustom}`,'error');return;}
 
     try {
         updateStatus('Saving...');
@@ -385,16 +478,28 @@ function renderCustomFieldsList(customFields) {
 
 function addCustomField(label = '', value = '') {
     const container = document.getElementById('custom-fields-list');
-    const row = document.createElement('div');
-    row.className = 'custom-field-row';
-    row.style.cssText = 'display:flex; gap:8px; margin-bottom:8px; align-items:center;';
-    row.innerHTML = `
-        <input type="text" class="custom-field-label" placeholder="Label (e.g. Visa Status)" value="${label.replace(/"/g, '&quot;')}" style="flex:1;">
-        <input type="text" class="custom-field-value" placeholder="Value" value="${value.replace(/"/g, '&quot;')}" style="flex:2;">
-        <button type="button" class="btn btn-remove" title="Remove">×</button>
-    `;
-    row.querySelector('.btn-remove').addEventListener('click', () => row.remove());
-    container.appendChild(row);
+    const row = document.createElement('div');row.className='custom-field-row';
+    const main=document.createElement('div');main.className='custom-field-main';
+    const labelInput=document.createElement('input');labelInput.type='text';labelInput.className='custom-field-label';labelInput.placeholder='Label or exact question';labelInput.value=label;
+    const valueInput=document.createElement('input');valueInput.type='text';valueInput.className='custom-field-value';valueInput.placeholder='Saved answer';valueInput.value=String(value);
+    const remove=document.createElement('button');remove.type='button';remove.className='btn btn-remove';remove.textContent='×';remove.title='Remove';remove.addEventListener('click',()=>row.remove());
+    main.append(labelInput,valueInput,remove);
+    const details=document.createElement('div');details.className='custom-field-details';
+    const meta=profileData?.customFieldMeta?.[label] || {};
+    const select=(className,items,selected,title)=>{
+        const input=document.createElement('select');input.className=className;input.setAttribute('aria-label',title);
+        for(const [value,label] of items){const option=document.createElement('option');option.value=value;option.textContent=label;input.appendChild(option);}
+        input.value=selected;const wrapper=document.createElement('label');wrapper.className='custom-detail';wrapper.textContent=title;wrapper.appendChild(input);details.appendChild(wrapper);return input;
+    };
+    const intent=select('custom-field-intent',[['','Match my label'],...SemanticResolver.registry.map(item=>[item.id,item.label])],meta.intent || '','Meaning');
+    intent.parentElement.classList.add('custom-detail-wide');
+    const type=select('custom-field-type',['text','number','boolean','date','duration'].map(value=>[value,value==='boolean'?'Yes / No':value.charAt(0).toUpperCase()+value.slice(1)]),meta.type || 'text','Answer type');
+    const unitSelect=select('custom-field-unit',['days','weeks','months'].map(value=>[value,value]),meta.unit || 'days','Duration unit');
+    const scope=document.createElement('input');scope.className='custom-field-scope';scope.placeholder='Country, employer or language (optional)';scope.value=meta.scope || '';scope.setAttribute('aria-label','Answer scope');const scopeLabel=document.createElement('label');scopeLabel.className='custom-detail custom-detail-wide';scopeLabel.textContent='Country, employer or language (optional)';scopeLabel.appendChild(scope);details.appendChild(scopeLabel);
+    const updateUnit=()=>{unitSelect.parentElement.hidden=type.value!=='duration';};
+    updateUnit();type.addEventListener('change',updateUnit);
+    intent.addEventListener('change',()=>{type.value=SemanticResolver.registry.find(item=>item.id===intent.value)?.type || 'text';updateUnit();});
+    row.append(main,details);container.appendChild(row);
 }
 
 // ========== Resume ==========

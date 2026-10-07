@@ -6,6 +6,13 @@
 import { LLMOrchestrator } from '../llm/orchestrator.js';
 import '../utils/resume-profile.js';
 import '../utils/field-policy.js';
+import '../core/workday-questions.js';
+import '../core/semantic.js';
+import {activate,rememberSite,registerSites,pageStatus,triggerPage} from './activation.js';
+chrome.runtime.onInstalled.addListener(() => registerSites().catch(console.error));
+chrome.runtime.onStartup.addListener(() => registerSites().catch(console.error));
+chrome.permissions.onRemoved.addListener(() => registerSites().catch(console.error));
+chrome.tabs.onRemoved.addListener(tabId=>chrome.storage.session.remove('sjaFrames:'+tabId));
 
 // Initialize LLM orchestrator
 const llmOrchestrator = new LLMOrchestrator();
@@ -85,6 +92,30 @@ async function updateProfileField(path, value) {
     const profile = await getProfile();
     setNestedValue(profile, path, value);
     return saveProfile(profile);
+}
+
+/** Persist an explicitly saved field-to-meaning binding, never an AI guess. */
+async function saveFieldAnswer(data) {
+    const profile = await getProfile();
+    const field=data.fieldInfo;
+    const cachedIdentity=field && SemanticResolver.identify(field,profile);
+    const identity=cachedIdentity || (data.intent && SemanticResolver.registry.some(item=>item.id===data.intent)
+        ? {intent:data.intent,polarity:data.polarity || 1,qualifiers:data.qualifiers || {},confidence:1} : null);
+    if (data.path.startsWith('customFields.')) profile.customFields={...profile.customFields,[data.path.slice('customFields.'.length)]:data.value};
+    else setNestedValue(profile,data.path,data.value);
+    if (identity && data.path.startsWith('customFields.')) {
+        const label=data.path.slice('customFields.'.length);
+        const entry=SemanticResolver.registry.find(item=>item.id===identity.intent);
+        profile.customFieldMeta={...profile.customFieldMeta,[label]:{intent:identity.intent,type:entry?.type || 'text',
+            scope:identity.qualifiers.employer || identity.qualifiers.country || identity.qualifiers.language || ''}};
+    }
+    await saveProfile(profile);
+    if (field && identity && SemanticResolver.registry.some(item=>item.id===identity.intent)) {
+        const {semanticQuestionBindings={}}=await chrome.storage.local.get('semanticQuestionBindings');
+        semanticQuestionBindings[SemanticResolver.bindingKey(field)]={...identity,version:SemanticResolver.version,confirmed:true};
+        const entries=Object.entries(semanticQuestionBindings).slice(-250);
+        await chrome.storage.local.set({semanticQuestionBindings:Object.fromEntries(entries)});
+    }
 }
 
 /**
@@ -168,8 +199,16 @@ async function handleMessage(message, sender) {
     console.log('[Background] Message received:', message.type);
 
     switch (message.type) {
+        case 'GET_ACTIVE_FORM_STATUS':
+            return pageStatus(message.data.tabId);
+        case 'TRIGGER_ACTIVE_AUTOFILL':
+            return triggerPage(message.data.tabId);
+        case 'ACTIVATE_AUTOFILL':
+            return activate(message.data || {},sender);
+        case 'REMEMBER_AUTOFILL_SITE':
+            return rememberSite(message.data.origin);
         case 'GET_PROFILE':
-            return { profile: await getProfile() };
+            return { profile: await getProfile(),bindings:(await chrome.storage.local.get('semanticQuestionBindings')).semanticQuestionBindings || {} };
 
         case 'UPDATE_PROFILE':
             await saveProfile(message.data);
@@ -177,7 +216,7 @@ async function handleMessage(message, sender) {
             return { success: true };
 
         case 'SAVE_TO_PROFILE':
-            await updateProfileField(message.data.path, message.data.value);
+            await saveFieldAnswer(message.data);
             notifyContentScripts('PROFILE_UPDATED');
             return { success: true };
 
@@ -199,6 +238,13 @@ async function handleMessage(message, sender) {
 
         case 'LLM_FIELD_GENERATE':
             return await handleLLMFieldGenerate(message.data);
+
+        case 'LLM_SKILL_MATCH':
+            try {
+                return await llmOrchestrator.matchSkill(message.data?.skill,message.data?.options,await getSettings());
+            } catch (error) {
+                return {optionIndex:null,error:error.message,retryAfterMs:error.retryAfterMs || 0};
+            }
 
         case 'PARSE_RESUME':
             return await handleResumeUpload(message.data);
@@ -294,6 +340,7 @@ async function handleLLMBatchRequest(data) {
 
     try {
         const profile = await getProfile();
+        SemanticResolver.setBindings((await chrome.storage.local.get('semanticQuestionBindings')).semanticQuestionBindings);
         const mappings = await llmOrchestrator.batchMapFields(
             data.fields,
             profile,
@@ -343,6 +390,7 @@ async function handleLLMFieldGenerate(data) {
 
     try {
         const profile = await getProfile();
+        SemanticResolver.setBindings((await chrome.storage.local.get('semanticQuestionBindings')).semanticQuestionBindings);
         const result = await llmOrchestrator.generateFieldContent(
             data.fieldInfo,
             data.userPrompt,

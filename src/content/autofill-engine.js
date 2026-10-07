@@ -61,7 +61,7 @@ class AutofillEngine {
      * @param {string} fieldType - Normalized type: text|dropdown|checkbox|radio|textarea|combobox
      * @returns {{ success: boolean, method: string }}
      */
-    fill(element, value, fieldType) {
+    fill(element, value, fieldType, options={}) {
         if (!element || value === undefined || value === null) {
             return { success: false, method: 'none' };
         }
@@ -75,7 +75,7 @@ class AutofillEngine {
             const type = element.type?.toLowerCase();
 
             if (fieldType === 'skills' || element.id === 'skills--skills') {
-                return this.fillSearchSelectSkills(element, Array.isArray(value) ? value : String(value).split(/[,;\n]/).map(s => s.trim()).filter(Boolean));
+                return this.fillSearchSelectSkills(element, Array.isArray(value) ? value : String(value).split(/[,;\n]/).map(s => s.trim()).filter(Boolean),options);
             }
 
             // Determine strategy
@@ -347,6 +347,7 @@ class AutofillEngine {
         // Step 4: Click the matched option
         if (matchedOption) {
             matchedOption.scrollIntoView({ block: 'nearest' });
+            if (globalThis.FieldPipeline && !FieldPipeline.canCommit(element)) return {success:false,method:'field:userEdit'};
             matchedOption.click();
             matchedOption.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
             matchedOption.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
@@ -373,6 +374,15 @@ class AutofillEngine {
             .map(chip => chip.getAttribute('data-automation-label') || chip.textContent.trim());
     }
 
+    skillLabelsMatch(actual, expected) {
+        if (globalThis.SkillAliases) return SkillAliases.matches(actual,expected);
+        // Workday taxonomy qualifies language names without changing the skill.
+        // Keep JavaScript, JavaFX and related skills distinct from Java.
+        const normalize = text => String(text).trim().toLowerCase().replace(/\s+/g, ' ')
+            .replace(/\s*\(programming language\)$/, '');
+        return normalize(actual) === normalize(expected);
+    }
+
     optionText(option) {
         const label = option.querySelector?.('[data-automation-id="promptOption"]');
         return (label?.getAttribute('data-automation-label') || option.getAttribute('data-automation-label') || option.textContent || '').trim();
@@ -382,8 +392,9 @@ class AutofillEngine {
         const norm = String(value).trim().toLowerCase().replace(/\s+/g, ' ');
         const started = Date.now();
         while (element.isConnected && Date.now() - started < timeout) {
-            const option = this.findDropdownOptions(element).find(opt =>
-                this.optionText(opt).toLowerCase().replace(/\s+/g, ' ') === norm);
+            const options = this.findDropdownOptions(element);
+            const option = options.find(opt => this.optionText(opt).toLowerCase().replace(/\s+/g, ' ') === norm) ||
+                (element.id === 'skills--skills' && options.find(opt => this.skillLabelsMatch(this.optionText(opt),value)));
             if (option) return option;
             await new Promise(resolve => setTimeout(resolve, element.id === 'skills--skills' ? 25 : this.optionPollInterval));
         }
@@ -391,7 +402,10 @@ class AutofillEngine {
     }
 
     async fillComboboxInput(element, value) {
-        if (this.selectedLabels(element).some(label => label.toLowerCase() === String(value).trim().toLowerCase())) {
+        let selectedLabel=String(value);
+        const matchesSelected = () => this.selectedLabels(element).some(label => element.id === 'skills--skills'
+            ? this.skillLabelsMatch(label,selectedLabel) : label.toLowerCase() === selectedLabel.trim().toLowerCase());
+        if (matchesSelected()) {
             return {success:true, method:'comboboxInput:alreadySelected'};
         }
         const original = element.value;
@@ -402,12 +416,32 @@ class AutofillEngine {
         };
         element.focus();
         element.click();
-        type(String(value));
-        const option = await this.waitForMatch(element, value, element.id === 'skills--skills' ? Math.min(600, this.optionWaitTimeout) : this.optionWaitTimeout);
+        type(element.id==='skills--skills' ? (globalThis.SkillAliases?.searchTerm(value) || String(value)) : String(value));
+        let option = await this.waitForMatch(element, value, this.optionWaitTimeout);
+        if (globalThis.FieldPipeline && !FieldPipeline.canCommit(element)) return {success:false,method:'field:userEdit'};
         if (!option && element.id === 'skills--skills') {
             // Workday Skills allows free-text chips when no taxonomy option matches.
             for (const event of ['keydown', 'keypress', 'keyup']) {
                 element.dispatchEvent(new KeyboardEvent(event, {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true}));
+            }
+            // Some tenants search on Enter instead of creating a free-text chip.
+            if (!matchesSelected()) option = await this.waitForMatch(element,value,this.optionWaitTimeout);
+            if (globalThis.FieldPipeline && !FieldPipeline.canCommit(element)) return {success:false,method:'field:userEdit'};
+            const workdaySkills=globalThis.activeAdapter?.id==='workday' || element.getAttribute('data-uxi-widget-type')==='selectinput';
+            if (!option && !matchesSelected() && workdaySkills && globalThis.chrome?.runtime?.sendMessage) {
+                const candidates=this.findDropdownOptions(element);
+                const labels=[...new Set(candidates.map(candidate=>this.optionText(candidate)).filter(Boolean))].slice(0,60);
+                if (labels.length) {
+                    try {
+                        const response=await chrome.runtime.sendMessage({type:'LLM_SKILL_MATCH',data:{skill:String(value),options:labels}});
+                        if (!element.isConnected || (globalThis.FieldPipeline && !FieldPipeline.canCommit(element))) return {success:false,method:'field:userEdit'};
+                        if (Number.isInteger(response?.optionIndex) && response.optionIndex>=0 && response.optionIndex<labels.length && response.confidence>=0.9) {
+                            const label=labels[response.optionIndex];
+                            const live=this.findDropdownOptions(element).filter(candidate=>this.optionText(candidate)===label);
+                            if (live.length===1) {option=live[0];selectedLabel=label;}
+                        }
+                    } catch (error) {console.warn('[AutofillEngine] Skill AI fallback unavailable:',error.message);}
+                }
             }
         } else if (!option) {
             element.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', code:'Escape', bubbles:true}));
@@ -415,20 +449,21 @@ class AutofillEngine {
             element.blur();
             return {success:false, method:'comboboxInput:noMatch'};
         }
-        if (option) {
+        if (option && !matchesSelected()) {
             // Workday binds selection to the inner prompt leaf, not the outer
             // virtualized row. Clicking the row bypasses that event handler.
-            const target = option.querySelector?.('[data-automation-id="promptLeafNode"]') || option;
+            const target = option.querySelector?.('[data-automation-id="promptLeafNode"]') ||
+                option.querySelector?.('[role="checkbox"], input[type="checkbox"]') || option;
             target.click();
         }
         // Workday stores selected values in chips rather than the search input.
         if (element.getAttribute('data-uxi-widget-type') === 'selectinput') {
             const started = Date.now();
             while (Date.now() - started < this.optionWaitTimeout) {
-                if (this.selectedLabels(element).some(label => label.toLowerCase() === String(value).trim().toLowerCase())) {
+                if (matchesSelected()) {
                     type('');
                     this.logFill(element, value, 'comboboxInput:selected');
-                    return {success:true, method:'comboboxInput:selected'};
+                    return {success:true, method:'comboboxInput:selected',selectedLabel};
                 }
                 await new Promise(resolve => setTimeout(resolve, element.id === 'skills--skills' ? 25 : this.optionPollInterval));
             }
@@ -439,17 +474,19 @@ class AutofillEngine {
         return {success:true, method:'comboboxInput:selected'};
     }
 
-    async fillSearchSelectSkills(element, skills) {
+    async fillSearchSelectSkills(element, skills,options={}) {
         const selected = [], missing = [];
-        const unique = [...new Map(skills.map(s => String(s).trim()).filter(Boolean).map(s => [s.toLowerCase(),s])).values()];
+        const resolutions=Object.create(null);
+        const unique = [...new Map(skills.map(s => String(s).trim()).filter(Boolean).map(s => [globalThis.SkillAliases?.canonical(s) || s.toLowerCase(),s])).values()];
         for (const skill of unique) {
             if (!element.isConnected) { missing.push(skill); continue; }
-            if (this.selectedLabels(element).some(label => label.toLowerCase() === skill.toLowerCase())) continue;
-            const result = await this.fillComboboxInput(element, skill);
+            if (this.selectedLabels(element).some(label => this.skillLabelsMatch(label,skill))) continue;
+            const result = await this.fillComboboxInput(element, skill,options);
+            if (result.success && result.selectedLabel) resolutions[skill]=result.selectedLabel;
             (result.success ? selected : missing).push(skill);
         }
         element.blur();
-        return {success:selected.length > 0, method:'searchSelectSkills', count:selected.length, selected, missing};
+        return {success:selected.length > 0, method:'searchSelectSkills', count:selected.length, selected, missing,resolutions};
     }
 
     /**

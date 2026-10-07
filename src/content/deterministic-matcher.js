@@ -24,6 +24,12 @@ class DeterministicMatcher {
             return {value:valid ? value : null, confidence:valid ? 1 : 0, source:FIELD_SOURCE.DETERMINISTIC,
                 profilePath:`links.${urlKind}`,reason:'Exact URL field; use a saved link only'};
         }
+        if (globalThis.SemanticResolver && !field.recordType) {
+            const resolved = SemanticResolver.resolve(field,profile);
+            if (resolved) return {value:resolved.value ?? null,confidence:resolved.blocked ? 0 : .95,
+                source:FIELD_SOURCE.DETERMINISTIC,profilePath:resolved.profilePath || resolved.fact?.profilePath,
+                strictChoice:true,semanticIntent:resolved.identity.intent,reason:resolved.reason || 'Canonical profile match'};
+        }
         const questionCategory = globalThis.FieldPolicy?.category(field);
         if (questionCategory === 'accuracy_declaration') {
             return {value:null,confidence:0,source:FIELD_SOURCE.DETERMINISTIC,reason:'Review declaration after completing the application'};
@@ -236,6 +242,7 @@ class DeterministicMatcher {
                 matchSource: match.source,
                 matchedProfilePath: match.profilePath,
                 strictChoice: !!match.strictChoice,
+                semanticIntent:match.semanticIntent,
                 matchReason: match.reason
             };
         });
@@ -327,7 +334,7 @@ class DeterministicMatcher {
      * Use FIELD_SYNONYMS to match field hints to profile paths
      */
     synonymMatch(field, profile) {
-        const hintWords = field.normalizedHints;
+        const hintWords = globalThis.SemanticResolver ? [field.label,field.name,field.placeholder,field.ariaLabel].filter(Boolean).map(normalizeFieldName) : field.normalizedHints;
 
         // Profile path mappings for each canonical field
         const pathMappings = {
@@ -370,7 +377,7 @@ class DeterministicMatcher {
                 }
                 // Partial match
                 else if (synonyms.some(syn => hint.includes(syn) || syn.includes(hint))) {
-                    const score = 0.8;
+                    const score = globalThis.SemanticResolver ? .75 : .8;
                     if (score > bestScore) {
                         bestScore = score;
                         bestMatch = canonical;
@@ -445,7 +452,7 @@ class DeterministicMatcher {
         if (bestMatch) {
             return {
                 value: bestMatch.value,
-                confidence: Math.min(bestScore * 0.9, 0.8), // Cap fuzzy at 0.8
+                confidence: Math.min(bestScore * 0.9, globalThis.SemanticResolver ? .75 : .8), // Cap fuzzy at 0.8
                 source: FIELD_SOURCE.DETERMINISTIC,
                 profilePath: bestMatch.path,
                 reason: `Fuzzy match: ${(bestScore * 100).toFixed(0)}% similar`

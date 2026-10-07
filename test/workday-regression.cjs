@@ -139,7 +139,7 @@ test('numbered language proficiency chooses Fluent and never a contradictory par
     assert.equal(selected,'');
 });
 
-test('skills use a shorter bounded search wait before committing free-text chips', async () => {
+test('skills allow the full bounded taxonomy search wait before Enter fallback', async () => {
     let timeout;
     const ctx=context({Event:class {},KeyboardEvent:class {}});
     ctx.el={id:'skills--skills',value:'',isConnected:true,getAttribute:()=>null,focus(){},click(){},dispatchEvent(){}};
@@ -148,7 +148,7 @@ test('skills use a shorter bounded search wait before committing free-text chips
     vm.runInContext(`autofillEngine.selectedLabels=()=>[]; autofillEngine.getNativeValueSetter=()=>null;
         autofillEngine.waitForMatch=async (el,value,t)=>{capture(t);return null}`,ctx);
     await vm.runInContext("autofillEngine.fillComboboxInput(el,'Java')",ctx);
-    assert.equal(timeout,600);
+    assert.equal(timeout,2000);
 });
 test('Workday segmented dates commit through real focus and blur, including unchanged visible years', () => {
     let active = null, committed = '', events = [];
@@ -263,7 +263,7 @@ test('SPA insertion is not lost when unrelated mutations follow; async fill pres
     assert.deepEqual(fills,[]); // promise hasn't completed yet
     await new Promise(r=>setTimeout(r,30));
     assert.deepEqual(fills,['new']);
-    assert.ok(statuses.some(s=>s.includes('3 fields detected · 1 filled')));
+    assert.ok(statuses.some(s=>s.includes('3 fields detected · 2 have answers · 1 filled from profile')));
     assert.equal(typeof listener,'function');
 });
 
@@ -335,6 +335,29 @@ test('skills commits exact options and free text chips, preserves existing chips
     assert.deepEqual(Array.from(result.missing),['Unavailable']);
     assert.ok(!typed.includes('Python'));
     assert.equal(el.value,'');
+});
+
+test('skills select qualified taxonomy labels via checkbox and wait for committed chips', async () => {
+    const labels=[],clicked=[];
+    const el={id:'skills--skills',tagName:'INPUT',value:'',isConnected:true,
+        getAttribute:key=>key==='data-uxi-widget-type'?'selectinput':null,
+        closest:()=>({querySelectorAll:()=>labels.map(label=>({getAttribute:()=>label}))}),
+        focus(){},click(){},blur(){},dispatchEvent(){}};
+    const ctx=context({document:{},Event:class{constructor(type){this.type=type}},KeyboardEvent:class{}});
+    ctx.el=el;
+    vm.runInContext(source('content/autofill-engine.js'),ctx);
+    const checkbox={click(){clicked.push('checkbox');labels.push('Java (Programming Language)');}};
+    ctx.java={textContent:'Java (Programming Language)',getAttribute:()=>null,
+        querySelector:selector=>selector.includes('checkbox')?checkbox:null,
+        click(){throw new Error('Outer option is not the selection target');}};
+    ctx.wrong={textContent:'JavaScript',getAttribute:()=>null,click(){throw new Error('Wrong skill');}};
+    vm.runInContext('autofillEngine.getNativeValueSetter=()=>null; autofillEngine.findDropdownOptions=()=>[wrong,java]',ctx);
+    const result=await vm.runInContext("autofillEngine.fill(el,['Java','java'])",ctx);
+    assert.equal(result.success,true);assert.equal(result.count,1);
+    assert.deepEqual(labels,['Java (Programming Language)']);assert.deepEqual(clicked,['checkbox']);
+    assert.equal(await vm.runInContext("autofillEngine.skillLabelsMatch('JavaScript','Java')",ctx),false);
+    const again=await vm.runInContext("autofillEngine.fillComboboxInput(el,'Java')",ctx);
+    assert.equal(again.method,'comboboxInput:alreadySelected');
 });
 
 test('selected search-control chips count as saved values and skills map directly from profile', () => {

@@ -11,12 +11,12 @@ Smart Job Autofill is a Chrome extension that intelligently fills job applicatio
 
 ## ✨ Features
 
-- **🔒 Privacy-First**: All data stored locally in IndexedDB. No external servers. Your data never leaves your browser.
+- **Local profile storage**: Profile data stays in IndexedDB; requested AI operations send relevant data to your configured provider.
 - **🧠 Intelligent Matching**: 5-tier deterministic matching before any LLM calls
 - **📝 Resume Parsing**: Upload PDF/DOCX resumes and auto-populate your profile
 - **🎨 Visual Confidence**: Green/Yellow/Red indicators show match confidence
 - **✏️ User Control**: Edit, regenerate, or save any autofilled value
-- **🔌 Optional LLM**: Bring your own API key (OpenAI or Anthropic) for advanced features
+- **🔌 Optional LLM**: Bring your own API key (OpenAI, Anthropic, or Gemini) for advanced features
 
 ## 🚀 Installation
 
@@ -45,13 +45,13 @@ Smart Job Autofill is a Chrome extension that intelligently fills job applicatio
 
 ### Configuring LLM (Optional)
 1. Go to the "Settings" tab
-2. Select your LLM provider (OpenAI or Anthropic)
+2. Select your LLM provider (OpenAI, Anthropic, or Gemini)
 3. Enter your API key
 4. Click "Save Settings"
 
 ### Autofilling Forms
 1. Navigate to a job application page
-2. The extension automatically detects and fills form fields
+2. Supported application pages automatically run local matching; enable other sites from the popup.
 3. Look for confidence indicators:
    - 🟢 High confidence / User-approved
    - 🟡 LLM-inferred
@@ -76,23 +76,40 @@ llm-form-filler/
 
 ### Data Flow
 
-1. **Form Detection**: Content script detects forms with ≥3 input fields
-2. **Field Extraction**: Extract labels, placeholders, aria-labels, nearby text
-3. **Deterministic Matching**: 5-tier matching without LLM:
-   - Exact ID/name match
-   - Normalized name match
-   - Synonym dictionary
-   - Fuzzy string similarity
-   - Pattern matching (email, phone, URL)
-4. **High-Confidence Fill**: Only auto-fill fields with ≥90% confidence
-5. **LLM Assistance** (if configured): Batch unresolved fields for mapping
-6. **User Review**: Visual indicators, edit controls, save-to-profile option
+1. A small loader runs only on Workday, Greenhouse, Wellfound, Lever, Phenom/Fiserv, or explicitly remembered origins. It loads the full engine only when an application is present.
+2. The platform adapter extracts normalized question/control/options/constraints from the application form.
+3. The semantic resolver identifies canonical meanings and resolves typed, scoped profile facts. Existing Workday repeat/date/skills handling is retained.
+   Workday skills use the explicit equivalents in `src/core/skill-aliases.js`, including full search names (JS searches JavaScript), exact option matching, and committed-chip verification. Related technologies remain distinct. If local matching and the Enter fallback fail, the Workday skills widget automatically sends just the skill and up to 60 available suggestion labels to the configured AI provider. The model returns an option index or abstains; only a valid index with confidence at least 0.9 is accepted, and the option must still exist before selection. Identical requests and abstentions are cached for 30 minutes in the worker; provider rate-limit cooldowns apply. This fallback also runs during automatic scans, only for the Workday skills widget and only when suggestions are available; other fields retain their existing AI activation rules.
+4. The option mapper checks exact labels, boolean polarity, explicit duration units/ranges, and language proficiency options. Ambiguous options remain for review.
+5. The shared field pipeline fills and verifies the actual control value. Failed verification is not counted as a successful fill.
+6. On explicit AI request, known questions resolve locally with zero provider calls; unknown wording is classified in batches. Narrative generation uses the saved profile.
+7. Explicitly saved field-to-meaning bindings persist locally and are keyed by question, control, options and schema version. Dynamic forms use scoped observers with replacement detection and bounded attempts.
+
+### Modules
+
+- `src/adapters/registry.js`: supported domains, platform signatures and application detection.
+- `src/background/activation.js`: manual/automatic script injection and remembered-origin permissions.
+- `src/adapters/runtime.js`: common adapter contract and Workday, Greenhouse, Wellfound, Lever, Phenom implementations.
+- `src/core/semantic.js`: canonical meanings, typed facts, scopes, derived availability and option mapping.
+- `src/core/field-pipeline.js`: shared filling, user-edit protection, verification and field states.
+
+### Activation and custom facts
+
+On other websites, open the popup and click **Enable autofill**. **Always enable on this site** requests origin access and remembers it for subsequent application forms. Automatic activation for individual platforms can be disabled in Settings. No form is submitted automatically.
+
+Workday question preferences support family relationships, restrictive agreements, IP ownership, outside employment, government relationships, and accuracy acknowledgements. Configure explicit Yes/No answers in Profile; empty preferences stay for review. **Save my Intel answers** saves the user-specified Intel preset (No for the five conflict categories, Yes for accuracy acknowledgement and work eligibility in India) and enables matching scoped to Intel. Change the employer scope or clear it to apply your saved preferences across Workday employers. Known wording resolves locally; unfamiliar unanswered choices use the existing cached batch classifier automatically when this feature is enabled. AI identifies meaning and polarity; the application selects the actual option from saved facts. Privacy, marketing, data-processing consent and terms are not accuracy acknowledgements.
+
+In **Add Field**, choose a meaning and answer type when your label differs from website wording. Optional scope restricts a fact to a country, employer or language. Existing custom labels/values remain compatible. An explicit start date takes priority over notice-period calculations; calculations require a notice start date or the configured “begins today” assumption. Month durations are not approximated as 30 days.
+
+The non-Workday adapters currently share native/ARIA widget support. Platform-specific complex widgets should be added to their adapter with fixtures; baseline registration does not guarantee every live widget works. Cross-origin frames require host access for their origin.
+
+Run regression tests with `node --test test/*.cjs`. `python3 test/ui-preview-server.py 8766` serves popup and application fixtures with demo data only.
 
 ## 🔐 Privacy Guarantees
 
-- **No Backend Servers**: All processing happens in your browser
+- **No application backend**: Local matching runs in the browser; requested AI operations call the configured provider.
 - **Local Storage Only**: Profile data stored in IndexedDB
-- **API Keys Encrypted**: Stored in Chrome's secure storage
+- **API keys**: Stored in Chrome local extension storage; not independently encrypted by this extension.
 - **LLM is Optional**: Extension works fully without any API key
 - **No Silent Persistence**: LLM-generated data only saved with explicit confirmation
 - **Session Cache**: Ephemeral data cleared on page navigation

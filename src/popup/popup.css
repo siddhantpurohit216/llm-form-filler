@@ -560,3 +560,7 @@ input:focus, select:focus, textarea:focus { border-color: #7894c1; box-shadow: 0
 .actions { position: sticky; bottom: -16px; padding: 12px 0; margin: 0; background: #fff; }
 .actions .btn { width: 100%; }
 :focus-visible { outline: 2px solid #7894c1; outline-offset: 2px; }
+
+.site-actions{padding:0 20px 12px}.custom-field-row{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--border,#ddd);border-radius:10px;margin-bottom:10px}.custom-field-main,.custom-field-details{display:flex;gap:8px;width:100%;flex-wrap:wrap}.custom-field-main input{min-width:0;flex:1}.custom-field-details select,.custom-field-details input{min-width:0;flex:1}.preference-check{display:flex;gap:8px;align-items:center;margin:8px 0}.preference-check input[type=checkbox]{width:auto}
+
+.custom-field-details{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.custom-detail{display:flex;flex-direction:column;gap:5px;font-size:11px;color:#607087}.custom-detail-wide{grid-column:1/-1}.custom-detail select,.custom-detail input{width:100%;box-sizing:border-box}.custom-detail[hidden]{display:none}

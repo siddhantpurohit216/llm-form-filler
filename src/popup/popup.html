@@ -27,6 +27,7 @@
       <div><span class="eyebrow">CURRENT PAGE</span><p id="page-summary">Checking application…</p></div>
       <button type="button" class="btn btn-primary" id="popup-autofill">Autofill</button>
     </section>
+    <div class="site-actions"><button type="button" class="btn btn-secondary" id="remember-site">Always enable on this site</button></div>
     <!-- Tab Content -->
     <main class="tab-content">
       <!-- Profile Tab -->
@@ -53,6 +54,14 @@
           </div>
         </div>
 
+        <div class="section">
+          <h2>Availability</h2>
+          <div class="form-row"><div class="form-group"><label for="notice-period">Notice period</label><input id="notice-period" type="number" min="0" step="1" placeholder="30"></div><div class="form-group"><label for="notice-unit">Unit</label><select id="notice-unit"><option value="days">Days</option><option value="weeks">Weeks</option><option value="months">Months</option></select></div></div>
+          <div class="form-group"><label for="earliest-start-date">Earliest start date (if known)</label><input id="earliest-start-date" type="date"></div>
+          <div class="form-group"><label for="notice-start-date">Notice begins on</label><input id="notice-start-date" type="date"></div>
+          <label class="preference-check"><input id="notice-start-today" type="checkbox"> Calculate availability assuming notice begins today</label>
+          <p class="description">An explicit start date takes priority. Otherwise availability uses the notice period and its starting date.</p>
+        </div>
         <div class="section">
           <h2>Links</h2>
           <div class="form-group">
@@ -100,9 +109,19 @@
           <h2>Application preferences</h2>
           <div class="form-group"><label for="application-country">Country for this application</label><input id="application-country" placeholder="e.g. India"></div>
           <div class="form-group"><label for="work-eligibility">Legally eligible to work in this country</label><select id="work-eligibility"><option value="">Answer manually</option><option>Yes</option><option>No</option></select></div>
+          <div class="form-group"><label for="work-authorization-basis">Work authorization basis (exact option, if needed)</label><input id="work-authorization-basis" placeholder="e.g. Yes, I am an Indian citizen/India passport holder"></div>
           <div class="form-group"><label for="previous-employment">Previously employed by this company</label><select id="previous-employment"><option>No</option><option>Yes</option></select></div>
           <div class="form-group"><label for="disability-answer">Disability disclosure</label><select id="disability-answer"><option value="">Answer manually</option><option>No</option><option>Yes</option><option>Prefer not to say</option></select></div>
-          <p class="description">Update the country and previous-employment answer for each application. Accuracy declarations remain for your review.</p>
+          <p class="description">Update the country and previous-employment answer for each application.</p>
+        </div>
+
+        <div class="section">
+          <h2>Workday question preferences</h2>
+          <label class="preference-check"><input id="workday-questions-enabled" type="checkbox">Automatically match these question categories, using AI for unfamiliar wording</label>
+          <div class="form-group"><label for="workday-question-employer">Employer scope (blank for all Workday employers)</label><input id="workday-question-employer" placeholder="e.g. Intel"></div>
+          <div id="workday-question-answers"></div>
+          <p class="description">Only saved answers are used. Blank answers remain for review. Privacy, marketing consent and terms stay separate.</p>
+          <button class="btn btn-secondary" id="intel-question-preset">Save my Intel answers</button>
         </div>
 
         <div class="section">
@@ -153,6 +172,7 @@
 
       <!-- Settings Tab -->
       <section id="settings-tab" class="tab-panel">
+        <div class="section"><h2>Automatic activation</h2><p class="description">Run autofill on application pages for these platforms. Workday skills can use AI automatically when local matching fails. Other fields use AI when you request it.</p><div id="adapter-controls"></div></div>
         <div class="section">
           <h2>LLM Configuration</h2>
           <p class="description">Configure AI assistance for intelligent form filling. Your API key is stored locally.
@@ -319,6 +339,9 @@
   <script src="../../lib/mammoth.browser.min.js"></script>
   <script src="../utils/resume-profile.js"></script>
   <script src="../utils/field-policy.js"></script>
+  <script src="../adapters/registry.js"></script>
+  <script src="../core/workday-questions.js"></script>
+  <script src="../core/semantic.js"></script>
   <script src="popup.js"></script>
 </body>
 

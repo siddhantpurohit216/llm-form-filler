@@ -24,21 +24,28 @@
   "content_scripts": [
     {
       "matches": [
-        "<all_urls>"
+        "https://myworkdayjobs.com/*",
+        "https://*.myworkdayjobs.com/*",
+        "https://myworkdaysite.com/*",
+        "https://*.myworkdaysite.com/*",
+        "https://greenhouse.io/*",
+        "https://*.greenhouse.io/*",
+        "https://greenhouse.com/*",
+        "https://*.greenhouse.com/*",
+        "https://wellfound.com/*",
+        "https://*.wellfound.com/*",
+        "https://jobs.lever.co/*",
+        "https://*.jobs.lever.co/*",
+        "https://phenompeople.com/*",
+        "https://*.phenompeople.com/*",
+        "https://careers.fiserv.com/*",
+        "https://*.careers.fiserv.com/*",
+        "https://careers.wexinc.com/*",
+        "https://*.careers.wexinc.com/*"
       ],
       "js": [
-        "src/utils/constants.js",
-        "src/utils/helpers.js",
-        "src/utils/field-policy.js",
-        "src/storage/session-cache.js",
-        "src/content/field-extractor.js",
-        "src/content/deterministic-matcher.js",
-        "src/content/autofill-engine.js",
-        "src/content/inline-ui.js",
-        "src/content/content.js"
-      ],
-      "css": [
-        "styles/injected.css"
+        "src/adapters/registry.js",
+        "src/content/bootstrap.js"
       ],
       "run_at": "document_idle",
       "all_frames": true
@@ -47,12 +54,31 @@
   "permissions": [
     "storage",
     "activeTab",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "https://api.openai.com/*",
     "https://api.anthropic.com/*",
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "https://myworkdayjobs.com/*",
+    "https://*.myworkdayjobs.com/*",
+    "https://myworkdaysite.com/*",
+    "https://*.myworkdaysite.com/*",
+    "https://greenhouse.io/*",
+    "https://*.greenhouse.io/*",
+    "https://greenhouse.com/*",
+    "https://*.greenhouse.com/*",
+    "https://wellfound.com/*",
+    "https://*.wellfound.com/*",
+    "https://jobs.lever.co/*",
+    "https://*.jobs.lever.co/*",
+    "https://phenompeople.com/*",
+    "https://*.phenompeople.com/*",
+    "https://careers.fiserv.com/*",
+    "https://*.careers.fiserv.com/*",
+    "https://careers.wexinc.com/*",
+    "https://*.careers.wexinc.com/*"
   ],
   "web_accessible_resources": [
     {
@@ -64,5 +90,9 @@
         "<all_urls>"
       ]
     }
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
   ]
 }

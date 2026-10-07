@@ -43,7 +43,7 @@ class SessionCache {
         if (!fieldId) return;
 
         const cacheEntry = {
-            value: data.value || '',
+            value: data.value ?? '',
             confidence: data.confidence || 0,
             source: data.source || FIELD_SOURCE.DETERMINISTIC,
             reason: data.reason || '',

@@ -45,6 +45,7 @@
         if (value === null || value === undefined || value === '' || !Number.isFinite(Number(mapping.confidence)) || Number(mapping.confidence) < .9) return false;
         const kind = urlKind(field);
         if (kind && !validURL(value,kind)) return false;
+        if (mapping.intent && globalThis.SemanticResolver) return SemanticResolver.validateMapping(field,mapping,profile);
         const questionCategory = category(field) || mapping.category;
         if (questionCategory === 'accuracy_declaration') return false;
         if (['work_eligibility','previous_employment','disability'].includes(questionCategory)) {
