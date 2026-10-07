@@ -1,3 +1,4 @@
+@font-face { font-family: "CareerBuddy Inter"; src: url("../../assets/fonts/InterVariable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
 /* Smart Job Autofill - Popup Styles */
 
 * {
@@ -7,7 +8,7 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    font-family: "CareerBuddy Inter", Inter, system-ui, sans-serif;
     font-size: 13px;
     line-height: 1.5;
     color: #1f2937;
@@ -281,6 +282,19 @@ textarea {
     margin-bottom: 10px;
 }
 
+.profile-accordion > summary, .record-accordion > summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #44546b;
+    padding: 4px 0;
+}
+.profile-accordion > summary:focus-visible, .record-accordion > summary:focus-visible {
+    outline: 2px solid #5379b9;
+    outline-offset: 4px;
+}
+.accordion-body, .record-body { padding-top: 16px; }
+.record-accordion > summary .btn-remove { float: right; }
+.record-accordion > summary .item-title { overflow-wrap: anywhere; }
 .item-title {
     font-weight: 500;
     color: #374151;
@@ -564,3 +578,8 @@ input:focus, select:focus, textarea:focus { border-color: #7894c1; box-shadow: 0
 .site-actions{padding:0 20px 12px}.custom-field-row{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--border,#ddd);border-radius:10px;margin-bottom:10px}.custom-field-main,.custom-field-details{display:flex;gap:8px;width:100%;flex-wrap:wrap}.custom-field-main input{min-width:0;flex:1}.custom-field-details select,.custom-field-details input{min-width:0;flex:1}.preference-check{display:flex;gap:8px;align-items:center;margin:8px 0}.preference-check input[type=checkbox]{width:auto}
 
 .custom-field-details{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.custom-detail{display:flex;flex-direction:column;gap:5px;font-size:11px;color:#607087}.custom-detail-wide{grid-column:1/-1}.custom-detail select,.custom-detail input{width:100%;box-sizing:border-box}.custom-detail[hidden]{display:none}
+
+.popup-brand h1 { font-weight: 400; }
+.popup-brand h1 strong { font-weight: 700; }
+.popup-brand h1 span { font-weight: 400; }
+.popup-brand .careerbuddy-logo { width: 40px; height: 40px; object-fit: contain; background: transparent; padding: 0; border: 0; border-radius: 0; flex-shrink: 0; }

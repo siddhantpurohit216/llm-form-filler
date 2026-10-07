@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Smart Job Autofill",
+  "name": "CareerBuddy",
   "version": "1.0.0",
-  "description": "Intelligent, privacy-first job application autofill with optional LLM assistance",
+  "description": "Intelligent autofill & resume companion.",
   "author": "Your Name",
   "icons": {
     "16": "assets/icons/icon16.png",
@@ -15,7 +15,7 @@
       "16": "assets/icons/icon16.png",
       "48": "assets/icons/icon48.png"
     },
-    "default_title": "Smart Job Autofill"
+    "default_title": "CareerBuddy"
   },
   "background": {
     "service_worker": "src/background/service-worker.js",

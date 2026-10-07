@@ -5,12 +5,12 @@
   position: fixed; z-index: 2147483646; display: flex; align-items: center;
   gap: 8px; padding: 6px; border: 1px solid #dce2eb; border-radius: 10px;
   background: #fff; color: #243044; box-shadow: 0 5px 18px #17243b1f;
-  font: 12px/1.4 system-ui, sans-serif; max-width: calc(100vw - 16px);
+  font: 12px/1.4 "CareerBuddy Inter", Inter, system-ui, sans-serif; max-width: calc(100vw - 16px);
 }
 .sja-field-overlay[hidden] { display: none !important; }
 .sja-confidence-indicator {
-  position: static; transform: none; flex-shrink: 0;
-  padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
 }
 .sja-confidence-exact { background: #edf8f0; color: #227043; }
 .sja-confidence-inferred { background: #f0edff; color: #6551a8; }
@@ -19,7 +19,7 @@
 .sja-action-btn {
   appearance: none; padding: 5px 9px; border: 1px solid transparent;
   border-radius: 6px; background: transparent; color: #44546b;
-  cursor: pointer; font: 500 12px/1.4 system-ui, sans-serif;
+  cursor: pointer; font: 500 12px/1.4 "CareerBuddy Inter", Inter, system-ui, sans-serif;
 }
 .sja-action-btn:hover { background: #f1f4f8; border-color: #e5e9f0; }
 .sja-action-btn:focus-visible, .sja-page-status button:focus-visible {
@@ -32,16 +32,21 @@
 }
 
 .sja-autofilled-exact {
-  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.15) !important;
+  box-shadow: 0 0 0 2px #32946a !important;
 }
 
 .sja-autofilled-inferred {
-  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.15) !important;
+  box-shadow: 0 0 0 2px #8c6bd1 !important;
 }
 
 .sja-autofilled-uncertain {
-  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3) !important;
+  box-shadow: 0 0 0 2px #c78a2c !important;
 }
+.sja-autofilled-unfilled { box-shadow: 0 0 0 1px #8a929f !important; }
+.sja-panel-header { cursor: grab; touch-action: none; user-select: none; }
+.sja-panel-header:active { cursor: grabbing; }
+.sja-panel-header button { cursor: pointer; }
+.sja-panel-tagline { font-size: 10px; font-weight: 400; color: #7a8699; margin-top: 3px; }
 
 /* Loading state */
 .sja-loading {
@@ -324,7 +329,7 @@
   position: fixed; bottom: 20px; right: 20px; z-index: 2147483645;
   width: min(310px, calc(100vw - 32px)); border: 1px solid #dce2eb;
   border-radius: 14px; background: #fff; color: #243044;
-  box-shadow: 0 8px 30px #17243b1a; font: 13px/1.5 system-ui, sans-serif;
+  box-shadow: 0 8px 30px #17243b1a; font: 13px/1.5 "CareerBuddy Inter", Inter, system-ui, sans-serif;
 }
 .sja-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px; }
 .sja-panel-brand { display: flex; align-items: center; gap: 9px; }
@@ -335,7 +340,7 @@
 .sja-panel-body { border-top: 1px solid #edf0f5; padding: 14px; }
 .sja-panel-minimized .sja-panel-body { display: none; }
 .sja-page-status [role="status"] { margin-bottom: 14px; color: #647187; font-size: 12px; overflow-wrap: anywhere; max-height: 110px; overflow-y: auto; }
-.sja-page-status .sja-panel-autofill { width: 100%; padding: 10px; border: 0; border-radius: 8px; background: #496eaf; color: #fff; font: 600 13px/1.5 system-ui, sans-serif; cursor: pointer; }
+.sja-page-status .sja-panel-autofill { width: 100%; padding: 10px; border: 0; border-radius: 8px; background: #496eaf; color: #fff; font: 600 13px/1.5 "CareerBuddy Inter", Inter, system-ui, sans-serif; cursor: pointer; }
 .sja-panel-autofill:hover { background: #3a5e9e; }
 .sja-panel-autofill:disabled { opacity: .6; cursor: wait; }
 .sja-panel-hint { margin: 10px 0 0; color: #8b95a5; font-size: 11px; text-align: center; }
@@ -344,3 +349,7 @@
 @media (prefers-reduced-motion: reduce) {
   .sja-modal, .sja-toast, .sja-autofilled { animation: none; transition: none; }
 }
+
+.sja-brand-career { font-weight: 700; }
+.sja-brand-buddy { font-weight: 400; }
+.sja-panel-brand .sja-brand-logo { width: 36px; height: 36px; object-fit: contain; background: transparent; padding: 0; border: 0; border-radius: 0; flex-shrink: 0; }

@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Smart Job Autofill</title>
+  <title>CareerBuddy</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 
@@ -12,7 +12,7 @@
   <div class="popup-container">
     <!-- Header -->
     <header class="popup-header">
-      <div class="popup-brand"><span class="brand-mark" aria-hidden="true">✓</span><div><h1>Smart Job Autofill</h1><p>Your answers, ready to go.</p></div></div>
+      <div class="popup-brand"><img class="brand-mark careerbuddy-logo" src="../../assets/icons/careerbuddy-logo.png" alt=""><div><h1><strong>Career</strong><span>Buddy</span></h1><p>Intelligent autofill &amp; resume companion.</p></div></div>
       <span class="version">v1.0.0</span>
     </header>
 
@@ -116,12 +116,13 @@
         </div>
 
         <div class="section">
-          <h2>Workday question preferences</h2>
+          <h2>Application question preferences (Workday)</h2>
+          <label class="preference-check"><input id="accept-terms" type="checkbox">Automatically tick terms-and-conditions acceptance checkboxes</label>
+          <p class="description">This accepts the terms shown on application forms. Separate marketing, SMS and talent-network choices use their own preferences.</p>
           <label class="preference-check"><input id="workday-questions-enabled" type="checkbox">Automatically match these question categories, using AI for unfamiliar wording</label>
-          <div class="form-group"><label for="workday-question-employer">Employer scope (blank for all Workday employers)</label><input id="workday-question-employer" placeholder="e.g. Intel"></div>
+          <div class="form-group"><label for="workday-question-employer">Apply these answers to an employer (optional)</label><input id="workday-question-employer" placeholder="Leave blank for all Workday employers"></div>
           <div id="workday-question-answers"></div>
           <p class="description">Only saved answers are used. Blank answers remain for review. Privacy, marketing consent and terms stay separate.</p>
-          <button class="btn btn-secondary" id="intel-question-preset">Save my Intel answers</button>
         </div>
 
         <div class="section">

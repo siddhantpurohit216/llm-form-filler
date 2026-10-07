@@ -16,6 +16,11 @@ class InlineUI {
     init() {
         if (this.initialized) return;
         this.initialized = true;
+        if (typeof FontFace !== 'undefined' && globalThis.chrome?.runtime?.getURL) {
+            const font = new FontFace('CareerBuddy Inter',
+                `url("${chrome.runtime.getURL('assets/fonts/InterVariable.woff2')}")`, {weight:'100 900'});
+            font.load().then(loaded => document.fonts.add(loaded)).catch(() => {});
+        }
         this.reposition = () => {
             if (this.positionFrame !== null) return;
             this.positionFrame = requestAnimationFrame(() => {
@@ -42,12 +47,26 @@ class InlineUI {
         header.className = 'sja-panel-header';
         const brand = document.createElement('div');
         brand.className = 'sja-panel-brand';
-        const mark = document.createElement('span');
-        mark.className = 'sja-brand-mark';
-        mark.textContent = '✓';
+        const mark = document.createElement('img');
+        mark.className = 'sja-brand-mark sja-brand-logo';
+        mark.alt = '';
+        mark.src = globalThis.chrome?.runtime?.getURL
+            ? chrome.runtime.getURL('assets/icons/careerbuddy-logo.png') : '/assets/icons/careerbuddy-logo.png';
         const title = document.createElement('strong');
-        title.textContent = 'Smart Job Autofill';
-        brand.append(mark, title);
+        const career = document.createElement('span');
+        career.className = 'sja-brand-career';
+        career.textContent = 'Career';
+        const buddy = document.createElement('span');
+        buddy.className = 'sja-brand-buddy';
+        buddy.textContent = 'Buddy';
+        title.append(career, buddy);
+        title.title = 'Intelligent autofill & resume companion.';
+        const brandCopy = document.createElement('div');
+        const tagline = document.createElement('div');
+        tagline.className = 'sja-panel-tagline';
+        tagline.textContent = 'Intelligent autofill & resume companion.';
+        brandCopy.append(title, tagline);
+        brand.append(mark, brandCopy);
         const collapse = document.createElement('button');
         collapse.className = 'sja-panel-toggle';
         collapse.type = 'button';
@@ -77,6 +96,41 @@ class InlineUI {
         body.append(this.pageStatus, this.pageButton, hint);
         this.pagePanel.append(header, body);
         document.body.appendChild(this.pagePanel);
+        this.makePanelDraggable(header);
+    }
+
+    makePanelDraggable(header) {
+        let drag = null;
+        const clamp = (left, top) => {
+            const rect = this.pagePanel.getBoundingClientRect();
+            this.pagePanel.style.left = `${Math.max(8, Math.min(left, window.innerWidth - rect.width - 8))}px`;
+            this.pagePanel.style.top = `${Math.max(8, Math.min(top, window.innerHeight - rect.height - 8))}px`;
+            this.pagePanel.style.right = 'auto';
+            this.pagePanel.style.bottom = 'auto';
+        };
+        header.addEventListener('pointerdown', event => {
+            if (event.button !== 0 || event.target.closest('button')) return;
+            const rect = this.pagePanel.getBoundingClientRect();
+            drag = {x:event.clientX - rect.left, y:event.clientY - rect.top};
+            header.setPointerCapture(event.pointerId);
+            event.preventDefault();
+        });
+        header.addEventListener('pointermove', event => {
+            if (drag) clamp(event.clientX - drag.x, event.clientY - drag.y);
+        });
+        const stop = () => { drag = null; };
+        header.addEventListener('pointerup', stop);
+        header.addEventListener('pointercancel', stop);
+        header.addEventListener('lostpointercapture', stop);
+        this.clampPanel = () => {
+            if (this.pagePanel.style.left) {
+                const rect = this.pagePanel.getBoundingClientRect();
+                clamp(rect.left, rect.top);
+            }
+        };
+        window.addEventListener('resize', this.clampPanel);
+        this.panelSizeObserver = new ResizeObserver(this.clampPanel);
+        this.panelSizeObserver.observe(this.pagePanel);
     }
 
     updatePageStatus(text, busy = false) {
@@ -94,6 +148,7 @@ class InlineUI {
     getConfidenceLevel(matchData) {
         const confidence = matchData.confidence || matchData.matchConfidence || 0;
         const source = matchData.source || matchData.matchSource;
+        if (source === FIELD_SOURCE.LLM) return 'inferred';
         if (source === FIELD_SOURCE.USER || confidence >= 0.9) return 'exact';
         if (source === FIELD_SOURCE.LLM || confidence >= 0.7) return 'inferred';
         return 'uncertain';
@@ -102,6 +157,7 @@ class InlineUI {
     addFieldIndicators(element, matchData) {
         if (!element?.isConnected) return;
         matchData = {...matchData, validationError:this.hasValidationError(element)};
+        matchData.borderLevel = this.updateFieldBorder(element, matchData);
         const existing = this.fieldOverlays.get(element);
         if (existing) {
             this.updateConfidenceIndicator(element, matchData);
@@ -181,9 +237,9 @@ class InlineUI {
     createConfidenceIndicator(matchData) {
         const indicator = document.createElement('span');
         indicator.className = 'sja-confidence-indicator';
-        const level = matchData.validationError ? 'uncertain' : this.getConfidenceLevel(matchData);
+        const level = matchData.validationError ? 'uncertain' : matchData.borderLevel || this.getConfidenceLevel(matchData);
         indicator.classList.add(`sja-confidence-${level}`);
-        const labels = {exact:'✓ Filled', inferred:'AI draft', uncertain:'Review'};
+        const labels = {exact:'Filled from profile or entered by you', inferred:'AI answer — review for accuracy', uncertain:'Review this answer', unfilled:'Unfilled'};
         indicator.textContent = matchData.validationError ? 'Needs review' : labels[level];
         indicator.setAttribute('title', matchData.reason || 'Filled from your saved profile');
         return indicator;
@@ -200,12 +256,6 @@ class InlineUI {
         const container = document.createElement('div');
         container.className = 'sja-actions-container';
         container.style.cssText = 'pointer-events: auto;';
-
-        // Edit button
-        container.appendChild(this.createButton('✏️', 'Edit', () => {
-            element.focus();
-            if (element.select) element.select();
-        }));
 
         // Regenerate button (for LLM/long-form fields)
         if (matchData.source === FIELD_SOURCE.LLM || matchData.isLongForm) {
@@ -454,6 +504,7 @@ class InlineUI {
     // ========== Existing UI Methods ==========
 
     updateConfidenceIndicator(element, matchData) {
+        matchData = {...matchData, borderLevel:this.updateFieldBorder(element, matchData)};
         const overlay = this.fieldOverlays.get(element)?.overlay;
         const indicator = overlay?.querySelector('.sja-confidence-indicator');
         if (!indicator) return;
@@ -463,6 +514,9 @@ class InlineUI {
 
     showSaveModal(element, matchData) {
         this.closeAllModals();
+        const field = fieldExtractor.refreshField(element);
+        const fieldLabel = field.label || matchData.label || field.name || 'Custom field';
+        const currentValue = element.type === 'checkbox' ? element.checked : fieldExtractor.getCurrentValue(element);
         const modal = document.createElement('div');
         modal.dataset.sjaUi = 'true';
         modal.className = 'sja-modal-overlay';
@@ -470,7 +524,8 @@ class InlineUI {
       <div class="sja-modal-header"><h3>💾 Save to Profile</h3><button class="sja-modal-close">&times;</button></div>
       <div class="sja-modal-body">
         <p>Save this value to your profile?</p>
-        <div><strong>Value:</strong> <span>${truncateText(element.value || element.textContent || '', 100)}</span></div>
+        <div><strong>Field:</strong> <span id="sja-save-field-label"></span></div>
+        <div><strong>Value:</strong> <span id="sja-save-field-value"></span></div>
         <div class="sja-modal-field">
           <label for="sja-profile-path">Save to:</label>
           <select id="sja-profile-path" class="sja-select">
@@ -504,9 +559,13 @@ class InlineUI {
 
         const select = modal.querySelector('#sja-profile-path');
         const customInput = modal.querySelector('#sja-custom-field-input');
-        if (matchData.profilePath && select.querySelector(`option[value="${matchData.profilePath}"]`)) {
-            select.value = matchData.profilePath;
-        }
+        modal.querySelector('#sja-save-field-label').textContent = truncateText(fieldLabel, 100);
+        modal.querySelector('#sja-save-field-label').title = fieldLabel;
+        modal.querySelector('#sja-save-field-value').textContent = truncateText(String(currentValue ?? ''), 100);
+        const profilePath = matchData.profilePath || sessionCache.get(field.id)?.profilePath;
+        select.value = Array.from(select.options).some(option => option.value === profilePath) ? profilePath : 'custom';
+        modal.querySelector('#sja-custom-key').value = fieldLabel;
+        customInput.style.display = select.value === 'custom' ? 'block' : 'none';
         select.addEventListener('change', () => customInput.style.display = select.value === 'custom' ? 'block' : 'none');
         modal.querySelector('.sja-modal-close').addEventListener('click', () => this.closeModal(element));
         modal.querySelector('.sja-modal-cancel').addEventListener('click', () => this.closeModal(element));
@@ -567,7 +626,19 @@ class InlineUI {
     }
 
     highlightField(element, level = 'inferred') {
+        element.classList.remove('sja-autofilled-exact', 'sja-autofilled-inferred', 'sja-autofilled-uncertain', 'sja-autofilled-unfilled');
         element.classList.add('sja-autofilled', `sja-autofilled-${level}`);
+    }
+
+    updateFieldBorder(element, matchData) {
+        const value = fieldExtractor.getCurrentValue(element);
+        const cached = sessionCache.get(element.dataset.sjaFieldId || matchData.fieldId);
+        const answered = value !== '' && value != null && value !== false && !(Array.isArray(value) && !value.length) ||
+            element.type === 'checkbox' && cached?.value === false;
+        const level = this.hasValidationError(element) || matchData.validationError ? 'uncertain' :
+            !answered ? 'unfilled' : this.getConfidenceLevel(matchData);
+        this.highlightField(element, level);
+        return level;
     }
 
     removeFieldUI(element) {
@@ -577,7 +648,7 @@ class InlineUI {
         this.fieldOverlays.delete(element);
         this.layoutObserver?.unobserve(element);
         if (this.activeField === element) this.activeField = null;
-        element.classList.remove('sja-autofilled', 'sja-autofilled-exact', 'sja-autofilled-inferred', 'sja-autofilled-uncertain');
+        element.classList.remove('sja-autofilled', 'sja-autofilled-exact', 'sja-autofilled-inferred', 'sja-autofilled-uncertain', 'sja-autofilled-unfilled');
         delete element.dataset.sjaProcessed;
     }
 
@@ -587,6 +658,8 @@ class InlineUI {
         this.tooltips.forEach(tooltip => tooltip.remove());
         this.tooltips.clear();
         this.layoutObserver?.disconnect();
+        this.panelSizeObserver?.disconnect();
+        window.removeEventListener('resize', this.clampPanel);
         window.removeEventListener('scroll', this.reposition, true);
         window.removeEventListener('resize', this.reposition);
         if (this.positionFrame !== null) cancelAnimationFrame(this.positionFrame);

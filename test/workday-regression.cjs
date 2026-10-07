@@ -93,6 +93,25 @@ test('repeated sections wait for insertion, stay scoped, and are idempotent acro
     assert.match((await vm.runInContext('autofillEngine.ensureProfileSections(profile)',ctx))[0],/manually/);
 });
 
+test('visible language rows ignore hidden records and retain their profile index on refresh', () => {
+    const nodes=[{id:'language-hidden--language',hidden:true},{id:'language-10--language'},
+        {id:'language-10--reading'},{id:'language-20--language'},{id:'language-20--reading'}];
+    const ctx=context({document:{body:{},querySelectorAll:()=>nodes}});
+    vm.runInContext(source('utils/constants.js')+source('utils/helpers.js')+source('content/field-extractor.js')+source('content/deterministic-matcher.js'),ctx);
+    const extractor=vm.runInContext('fieldExtractor',ctx);
+    extractor.findShadowDOMInputs=()=>{};
+    extractor.shouldSkipField=el=>!!el.hidden;
+    extractor.extractFieldData=el=>({id:el.id,element:el,label:el.id.endsWith('--language')?'Language':'Reading'});
+    const fields=extractor.extractAllFields(ctx.document);
+    assert.deepEqual(Array.from(fields,f=>f.recordIndex),[0,0,1,1]);
+    ctx.profile={languages:[{language:'English',reading:'Advanced'},{language:'Hindi',reading:'Intermediate'}]};
+    for(const [i,expected] of ['English','Advanced','Hindi','Intermediate'].entries()) {
+        ctx.field=extractor.refreshField(fields[i].element);
+        assert.equal(ctx.field.recordIndex,i<2?0:1);
+        assert.equal(vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx).value,expected);
+    }
+});
+
 test('language matching uses labels for dynamic proficiency IDs and respects per-language overrides', () => {
     const ctx=context();
     vm.runInContext(source('utils/constants.js') + source('utils/helpers.js') + source('content/deterministic-matcher.js'),ctx);

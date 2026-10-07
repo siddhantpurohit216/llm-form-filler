@@ -1,6 +1,6 @@
-# Smart Job Autofill - Chrome Extension
+# CareerBuddy - Chrome Extension
 
-**Intelligent, privacy-first job application autofill with optional LLM assistance.**
+**Intelligent autofill & resume companion.**
 
 [![Chrome Web Store Ready](https://img.shields.io/badge/Chrome%20Web%20Store-Ready-green.svg)](https://chrome.google.com/webstore)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue.svg)](https://developer.chrome.com/docs/extensions/mv3/)
@@ -97,7 +97,7 @@ llm-form-filler/
 
 On other websites, open the popup and click **Enable autofill**. **Always enable on this site** requests origin access and remembers it for subsequent application forms. Automatic activation for individual platforms can be disabled in Settings. No form is submitted automatically.
 
-Workday question preferences support family relationships, restrictive agreements, IP ownership, outside employment, government relationships, and accuracy acknowledgements. Configure explicit Yes/No answers in Profile; empty preferences stay for review. **Save my Intel answers** saves the user-specified Intel preset (No for the five conflict categories, Yes for accuracy acknowledgement and work eligibility in India) and enables matching scoped to Intel. Change the employer scope or clear it to apply your saved preferences across Workday employers. Known wording resolves locally; unfamiliar unanswered choices use the existing cached batch classifier automatically when this feature is enabled. AI identifies meaning and polarity; the application selects the actual option from saved facts. Privacy, marketing, data-processing consent and terms are not accuracy acknowledgements.
+Workday question preferences support family relationships, restrictive agreements, IP ownership, outside employment, government relationships, and accuracy acknowledgements. Configure explicit Yes/No answers in Profile; empty preferences stay for review. These preferences are employer-neutral. Leave the optional employer scope blank to apply your saved answers across Workday employers, or specify an employer when an answer is organization-specific. No employer preset supplies personal answers. Known wording resolves locally; unfamiliar unanswered choices use the existing cached batch classifier automatically when this feature is enabled. AI identifies meaning and polarity; the application selects the actual option from saved facts. Privacy, marketing, data-processing consent and terms are not accuracy acknowledgements.
 
 In **Add Field**, choose a meaning and answer type when your label differs from website wording. Optional scope restricts a fact to a country, employer or language. Existing custom labels/values remain compatible. An explicit start date takes priority over notice-period calculations; calculations require a notice start date or the configured “begins today” assumption. Month durations are not approximated as 30 days.
 

@@ -25,10 +25,10 @@
         // Privacy, terms, marketing and data-processing consent are separate.
         let key;
         if(/government official/.test(label) && /relationship|worked|working|business/.test(label))key='governmentRelationship';
-        else if(/immediate family member|family member.*(?:employee|intel)|(?:employee|intel).*family member/.test(label))key='familyRelationship';
+        else if(/immediate family member|family member.*(?:employee|employer|company)|(?:employee|employer|company).*family member/.test(label))key='familyRelationship';
         else if(/non[- ]?competition|non[- ]?solicitation|non[- ]?compete/.test(label))key='restrictiveAgreement';
         else if(/(?:own|control|economic interest).*intellectual property/.test(label))key='ipOwnership';
-        else if(/(?:maintain|retain|intend|engage).*(?:secondary|outside|non[- ]intel).*(?:employment|business)/.test(label))key='secondaryEmployment';
+        else if(/(?:maintain|retain|intend|engage).*(?:secondary|outside|non[- ][a-z][a-z -]*).*(?:employment|business)/.test(label))key='secondaryEmployment';
         else if(/(?:false information|misrepresentation|omission of facts|information.*(?:true|accurate))/.test(label) && /understand|agree|certify|declare|undertake/.test(label))key='accuracyAcknowledgement';
         // Inverted wording is classified by AI rather than a positive-question rule.
         if(/\bnot (?:an?|have|own|control|sign|intend|maintain)|\bno (?:family|restrictions|interest)/.test(label))key=null;

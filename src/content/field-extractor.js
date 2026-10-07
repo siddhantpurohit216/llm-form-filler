@@ -39,6 +39,7 @@ class FieldExtractor {
         this.findShadowDOMInputs(root === document ? document.body : root, allElements);
 
         let index = 0;
+        const recordIds = {};
         allElements.forEach((element) => {
             if (this.shouldSkipField(element)) {
                 return;
@@ -48,9 +49,10 @@ class FieldExtractor {
             if (fieldData) {
                 const record = element.id?.match(/^(workExperience|education|language)-[^-]+--/);
                 if (record) {
-                    const recordIds = [...allElements].map(el => el.id?.match(new RegExp(`^${record[1]}-[^-]+--`))?.[0]).filter(Boolean);
+                    const ids = recordIds[record[1]] ||= [];
+                    if (!ids.includes(record[0])) ids.push(record[0]);
                     fieldData.recordType = record[1];
-                    fieldData.recordIndex = [...new Set(recordIds)].indexOf(record[0]);
+                    fieldData.recordIndex = ids.indexOf(record[0]);
                 }
                 fields.push(fieldData);
                 this.extractedFields.set(fieldData.id, fieldData);
@@ -508,7 +510,26 @@ class FieldExtractor {
      */
     refreshField(element) {
         const index = Array.from(document.querySelectorAll(FieldExtractor.FIELD_SELECTORS)).indexOf(element);
-        return this.extractFieldData(element, index);
+        const field = this.extractFieldData(element, index);
+        if (!field) return field;
+        const previous = [...this.extractedFields.values()].find(entry => entry.element === element);
+        if (previous?.recordType) {
+            field.recordType = previous.recordType;
+            field.recordIndex = previous.recordIndex;
+        } else {
+            const record = element.id?.match(/^(workExperience|education|language)-[^-]+--/);
+            if (record) {
+                const root = element.getRootNode?.() || document;
+                const ids = [...new Set([...root.querySelectorAll(FieldExtractor.FIELD_SELECTORS)]
+                    .filter(el => !this.shouldSkipField(el))
+                    .map(el => el.id?.match(new RegExp(`^${record[1]}-[^-]+--`))?.[0]).filter(Boolean))];
+                if (ids.includes(record[0])) {
+                    field.recordType = record[1];
+                    field.recordIndex = ids.indexOf(record[0]);
+                }
+            }
+        }
+        return field;
     }
 
     /**

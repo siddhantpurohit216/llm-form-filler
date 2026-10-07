@@ -8,6 +8,35 @@ function setup(){
     return ctx;
 }
 const field=label=>({id:label,label,adapter:'workday',type:'dropdown',pageContext:{url:'https://intel.wd1.myworkdayjobs.com/apply'},optionDetails:[{label:'Yes',value:'yes-id'},{label:'No',value:'no-id'}]});
+test('disability options map explicit saved preferences without guessing a missing disclosure',()=>{
+    const ctx=setup();
+    const f={...field('Please indicate your disability status.'),optionDetails:[
+        {label:"No, I don't have a disability (India)",value:'no-disability'},
+        {label:'Yes, I have a disability (India)',value:'has-disability'}]};
+    assert.equal(ctx.SemanticResolver.resolve(f,ctx.profile).blocked,true);
+    ctx.profile.applicationDefaults.disability='No';
+    assert.equal(ctx.SemanticResolver.resolve(f,ctx.profile).value,'no-disability');
+    ctx.profile.applicationDefaults.disability='Yes';
+    assert.equal(ctx.SemanticResolver.resolve(f,ctx.profile).value,'has-disability');
+    f.optionDetails.push({label:'No, I do not have a disability (another region)',value:'other'});
+    ctx.profile.applicationDefaults.disability='No';
+    assert.equal(ctx.SemanticResolver.resolve(f,ctx.profile).blocked,true);
+});
+test('terms checkboxes require an explicit preference and exclude separate marketing choices',()=>{
+    const ctx=setup();
+    const terms={...field('Yes, I have read and consent to the terms and conditions'),type:'checkbox'};
+    assert.equal(ctx.SemanticResolver.resolve(terms,ctx.profile).blocked,true);
+    ctx.profile.applicationDefaults.acceptTerms=true;
+    const answer=ctx.SemanticResolver.resolve(terms,ctx.profile);
+    assert.equal(answer.value,true);
+    assert.equal(ctx.FieldPolicy.validate(terms,{...answer,intent:answer.identity.intent},ctx.profile),true);
+    for(const label of ['I accept the terms and conditions and marketing SMS','I consent to receive promotional SMS','I consent to join the talent network']) {
+        const resolved=ctx.SemanticResolver.resolve({...terms,label},ctx.profile);
+        assert.ok(!resolved || resolved.blocked);
+    }
+    ctx.profile.applicationDefaults.acceptTerms=false;
+    assert.equal(ctx.SemanticResolver.resolve(terms,ctx.profile).blocked,true);
+});
 test('Intel question categories resolve explicit saved answers and real option values',()=>{
     const ctx=setup();
     for(const [label,value] of [

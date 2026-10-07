@@ -12,6 +12,7 @@
         ['links.github','GitHub URL','url',['github','github url']],
         ['links.portfolio','Portfolio URL','url',['portfolio','portfolio url','personal website']],
         ['personal.gender','Gender','text',['gender','sex']],
+        ['consent.terms','Accept terms and conditions','boolean',['terms and conditions','terms of service']],
         ['communication.preferredLanguage','Preferred language','text',['preferred language','preferred communication language']],
         ['languages.language','Language','text',['language']],
         ['languages.reading','Reading proficiency','text',['reading proficiency','reading ability','reading']],
@@ -62,6 +63,7 @@
         for (const id of ['contact.firstName','contact.lastName','contact.email','contact.phone','contact.city','contact.country','links.linkedin','links.github','links.portfolio','communication.preferredLanguage','application.source']) add(id,get(profile,id),id);
         if (profile.contact?.firstName || profile.contact?.lastName) add('contact.fullName',[profile.contact?.firstName,profile.contact?.lastName].filter(Boolean).join(' '),'contact.fullName');
         add('personal.gender',profile.contact?.gender || profile.applicationDefaults?.gender || profile.gender,'contact.gender');
+        if (profile.applicationDefaults?.acceptTerms === true) add('consent.terms',true,'applicationDefaults.acceptTerms','boolean');
         add('employment.noticePeriod',profile.employment?.noticePeriod,'employment.noticePeriod','duration');
         add('employment.earliestStartDate',profile.employment?.earliestStartDate,'employment.earliestStartDate','date');
         add('workAuthorization.sponsorship',profile.applicationDefaults?.requiresSponsorship,'applicationDefaults.requiresSponsorship','boolean', {country:profile.applicationDefaults?.applicationCountry || ''});
@@ -103,6 +105,11 @@
     } catch {}
     countryNames.push('United States','United Kingdom','UK','USA');
     function identify(field,profile={},suggestion=null) {
+        const termsLabel = String(field.label || '');
+        if (field.type === 'checkbox' && /\bterms\s*(?:and|&)\s*conditions\b|\bterms of service\b/i.test(termsLabel) &&
+            /\b(?:agree|accept|consent|acknowledge)\b/i.test(termsLabel) &&
+            !/\b(?:sms|marketing|promotional|newsletter|talent network)\b/i.test(termsLabel))
+            return {intent:'consent.terms',qualifiers:{},polarity:1,confidence:1};
         const workday=globalThis.WorkdayQuestions?.identify(field,profile,suggestion);
         if(workday)return workday;
         if(suggestion?.intent?.startsWith('workday.') && !workday)return {intent:'review',qualifiers:{},confidence:1};
@@ -171,6 +178,15 @@
             if(typeof answer==='boolean' && intent==='workAuthorization.eligible' &&
                 /citizen|passport|\boci\b|visa|employment pass|residen|permit/i.test(option.label))return false;
             if (normalize(option.label)===text || normalize(option.value)===text) return true;
+            if (intent==='personal.disability') {
+                const label=normalize(option.label);
+                const saved=bool(answer);
+                if(saved!==null && /\bdisabilit/.test(label)) {
+                    if(saved===false && /^no\b/.test(label) && /\b(?:don t|do not|not|no)\b/.test(label))return true;
+                    if(saved===true && /^yes\b/.test(label) && !/\b(?:don t|do not|not)\b/.test(label))return true;
+                }
+                if(text==='prefer not to say' && /^(?:prefer not to say|i (?:do not wish|don t wish|choose not) to (?:answer|disclose)|decline to (?:answer|disclose))(?: |$)/.test(label))return true;
+            }
             if(typeof answer==='boolean' && intent==='workday.accuracyAcknowledgement') {
                 const label=normalize(option.label);
                 if(answer && /(?:certify|warrant|declare).*(?:true|accurate|correct)/.test(label) && !/\bnot\b/.test(label))return true;

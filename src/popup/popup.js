@@ -3,6 +3,7 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+    initAccordions();
     initTabs();
     initPageActions();
     initProfile();
@@ -10,6 +11,55 @@ document.addEventListener('DOMContentLoaded', () => {
     initSettings();
     updateStatus('Ready');
 });
+
+function initAccordions() {
+    document.querySelectorAll('.tab-panel > .section').forEach(section => {
+        const heading = section.querySelector('h2');
+        if (!heading) return;
+        const details = document.createElement('details');
+        details.className = section.className + ' profile-accordion';
+        const summary = document.createElement('summary');
+        summary.textContent = heading.textContent;
+        heading.remove();
+        details.append(summary);
+        const body = document.createElement('div');
+        body.className = 'accordion-body';
+        body.append(...section.childNodes);
+        details.append(body);
+        section.replaceWith(details);
+        const list = body.querySelector('.item-list');
+        if (list) {
+            const title = summary.textContent;
+            const update = () => {summary.textContent = `${title} (${list.children.length})`;};
+            new MutationObserver(update).observe(list, {childList:true});
+            update();
+        }
+    });
+}
+
+function collapseRecord(card, index, type) {
+    const details = document.createElement('details');
+    details.className = 'record-accordion';
+    const summary = document.createElement('summary');
+    const header = card.querySelector('.item-header');
+    summary.append(...header.childNodes);
+    header.remove();
+    const body = document.createElement('div');
+    body.className = 'record-body';
+    body.append(...card.childNodes);
+    details.append(summary, body);
+    card.append(details);
+    const update = () => {
+        const primary = card.querySelector(type === 'Experience' ? '.exp-title' : '.edu-degree').value.trim();
+        const organization = card.querySelector(type === 'Experience' ? '.exp-company' : '.edu-institution').value.trim();
+        summary.querySelector('.item-title').textContent = [primary || `${type} ${index + 1}`, organization].filter(Boolean).join(' · ');
+    };
+    card.addEventListener('input', update);
+    summary.querySelector('.btn-remove').addEventListener('click', event => {event.preventDefault(); event.stopPropagation();});
+    update();
+    // A just-added empty record is immediately editable; saved records start collapsed.
+    details.open = !body.querySelector('input')?.value;
+}
 
 async function initPageActions() {
     const summary = document.getElementById('page-summary');
@@ -145,6 +195,7 @@ function populateProfileForm(profile) {
     document.getElementById('notice-start-date').value = profile.employment?.noticeStartDate || '';
     document.getElementById('notice-start-today').checked = profile.employment?.noticeStartMode === 'today';
     const defaults = profile.applicationDefaults || {};
+    document.getElementById('accept-terms').checked = defaults.acceptTerms === true;
     document.getElementById('application-country').value = defaults.applicationCountry || '';
     document.getElementById('work-eligibility').value = defaults.workEligibility?.[defaults.applicationCountry] || '';
     document.getElementById('work-authorization-basis').value=defaults.workAuthorizationBasis?.[defaults.applicationCountry] || '';
@@ -176,12 +227,6 @@ function populateProfileForm(profile) {
 }
 
 function setupProfileListeners() {
-    document.getElementById('intel-question-preset').addEventListener('click',async()=>{
-        populateWorkdayQuestions({enabled:true,employer:'Intel',answers:{familyRelationship:false,restrictiveAgreement:false,ipOwnership:false,secondaryEmployment:false,governmentRelationship:false,accuracyAcknowledgement:true}});
-        document.getElementById('application-country').value='India';
-        document.getElementById('work-eligibility').value='Yes';
-        await saveProfile();
-    });
     // Save button
     document.getElementById('save-profile').addEventListener('click', saveProfile);
 
@@ -239,6 +284,7 @@ function renderEducationList(education) {
         card.querySelector('.edu-gpa').value = edu.gpa || '';
         card.querySelector('.edu-start').value = edu.startDate || '';
         card.querySelector('.edu-end').value = edu.endDate || '';
+        collapseRecord(card, index, 'Education');
 
         // Input listeners
         card.querySelectorAll('input').forEach(input => {
@@ -285,6 +331,7 @@ function renderExperienceList(experience) {
         card.querySelector('.exp-description').value = exp.description || '';
         card.querySelector('.exp-current').checked = exp.current === true;
         card.querySelector('.exp-end').disabled = exp.current === true;
+        collapseRecord(card, index, 'Experience');
 
         // Input listeners
         card.querySelectorAll('input, textarea').forEach(input => {
@@ -400,6 +447,7 @@ async function saveProfile() {
         noticeStartMode:document.getElementById('notice-start-today').checked?'today':null};
     const country = document.getElementById('application-country').value.trim();
     profileData.applicationDefaults = {...profileData.applicationDefaults,
+        acceptTerms:document.getElementById('accept-terms').checked,
         applicationCountry:country,
         workEligibility:{...profileData.applicationDefaults?.workEligibility,[country]:document.getElementById('work-eligibility').value},
         workAuthorizationBasis:{...profileData.applicationDefaults?.workAuthorizationBasis,[country]:document.getElementById('work-authorization-basis').value.trim()},
@@ -414,6 +462,8 @@ async function saveProfile() {
     const invalidDate = [...document.querySelectorAll('.exp-start,.exp-end,.edu-start,.edu-end')]
         .find(input => !input.disabled && input.value.trim() && !ResumeProfile.date(input.value));
     if (invalidDate) {
+        for (let ancestor=invalidDate.parentElement; ancestor; ancestor=ancestor.parentElement)
+            if (ancestor.tagName === 'DETAILS') ancestor.open = true;
         updateStatus('Use YYYY, YYYY-MM, or YYYY-MM-DD for dates, or leave them blank.', 'error');
         invalidDate.focus();
         return;
