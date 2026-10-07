@@ -62,7 +62,7 @@ test('choice mapping requires saved factual preferences and exact available opti
     assert.equal(policy.validate(field,mapping,profile),true);
     assert.equal(policy.validate(field,{...mapping,value:'invented'},profile),false);
     assert.equal(policy.validate(field,{...mapping,answer:'Yes'},profile),false);
-    assert.equal(policy.validate(field,mapping,{}),false);
+    assert.equal(policy.validate(field,mapping,{}),true); // User-configured previous-employment default No.
     assert.equal(policy.validate({...field,label:'Are you a person suffering from any disability?'},{...mapping,category:'disability'},profile),false);
     assert.equal(policy.validate({...field,label:'Are you legally eligible to work in the country where this position is located?'},
         {...mapping,category:'work_eligibility'},{applicationDefaults:{applicationCountry:'India',workEligibility:{India:'No'}}}),true);
@@ -96,4 +96,65 @@ test('Gemini prompt retains option values and constraints; option changes invali
     ctx.fields[0].optionDetails=[{label:'No, never',value:'new-id'}];
     const rejected=await vm.runInContext('ai.mapFieldBatch(fields,profile,{provider:"gemini"})',ctx);
     assert.equal(calls,2); assert.equal(rejected.length,0);
+});
+
+test('gender question matches explicit saved custom profile value above auto-fill threshold',()=>{
+    const ctx=context();
+    vm.runInContext(source('utils/constants.js')+source('utils/helpers.js')+source('content/deterministic-matcher.js'),ctx);
+    ctx.field={id:'QUESTIONNAIRE-6-748',name:'QUESTIONNAIRE-6-748',type:'dropdown',
+        label:'Please select the option which best defines your gender.',normalizedHints:['pleaseselecttheoptionwhichbestdefinesyourgender'],combinedHint:'gender'};
+    ctx.profile={customFields:{Gender:'Male'}};
+    const result=vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx);
+    assert.equal(result.value,'Male');
+    assert.equal(result.confidence,.9);
+    assert.equal(result.profilePath,'customFields.Gender');
+    assert.equal(result.strictChoice,true);
+    ctx.profile={contact:{gender:'Female'}};
+    assert.equal(vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx).value,'Female');
+    ctx.profile={contact:{firstName:'John'}};
+    assert.equal(vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx).value,null);
+});
+
+test('initial scan fills saved gender without AI and rejects a nonmatching gender option',async()=>{
+    for (const optionLabel of ['Male','Female']) {
+        const element={id:'QUESTIONNAIRE-6-748',value:'',isConnected:true,tagName:'SELECT',
+            closest:()=>({contains:()=>true}),contains:()=>true,getAttribute:()=>null};
+        const field={id:'gender',name:element.id,element,type:'dropdown',label:'Please select the option which best defines your gender.',
+            normalizedHints:['gender'],combinedHint:'gender',allHints:['gender']};
+        const cache=new Map(),fills=[],messages=[];let status='';
+        const ctx=context({window:{addEventListener(){}},document:{readyState:'complete',body:{},addEventListener(){},querySelectorAll:()=>[element]},
+            MutationObserver:class{observe(){}},debounce:fn=>fn,FieldExtractor:{FIELD_SELECTORS:'fields'},
+            fieldExtractor:{shouldSkipField:()=>false,extractAllFields:()=>[field],getCurrentValue:e=>e.value},
+            inlineUI:{init(){},showPageStatus(){},updatePageStatus:text=>status=text,setPageBusy(){},addFieldIndicators(){},highlightField(){}},
+            sessionCache:{get:id=>cache.get(id),set:(id,data)=>cache.set(id,data)},
+            autofillEngine:{captureFieldOptions:async()=>[{label:optionLabel,value:'option-id'}],
+                fill:async(e,v)=>{fills.push(v);e.value=v;return {success:true}}},
+            chrome:{runtime:{sendMessage:async m=>{messages.push(m.type);return {profile:{customFields:{Gender:'Male'}}}},onMessage:{addListener(){}}}}});
+        vm.runInContext(source('utils/constants.js')+source('utils/helpers.js')+source('content/deterministic-matcher.js'),ctx);
+        vm.runInContext(source('content/content.js'),ctx);
+        await new Promise(r=>setImmediate(r));
+        assert.deepEqual(fills,optionLabel==='Male'?['option-id']:[]);
+        assert.equal(messages.length,1); // Only GET_PROFILE; no LLM call.
+        assert.match(status,optionLabel==='Male'?/1 filled from profile/:/0 filled from profile/);
+    }
+});
+
+test('custom profile fields fill by exact question and boilerplate wording without borrowing context',()=>{
+    const ctx=context();
+    vm.runInContext(source('utils/constants.js')+source('utils/helpers.js')+source('content/deterministic-matcher.js'),ctx);
+    ctx.profile={customFields:{'Notice period':'30 days','Open to relocation':false}};
+    ctx.field={label:'What is your notice period? *',name:'q-927',type:'dropdown',normalizedHints:[],combinedHint:''};
+    let result=vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx);
+    assert.equal(result.value,'30 days');assert.equal(result.confidence,.9);assert.equal(result.strictChoice,true);
+    ctx.field.label='Notice period';
+    assert.equal(vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx).confidence,.95);
+    ctx.field.label='Open to relocation';ctx.field.type='checkbox';
+    assert.equal(vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx).value,false);
+    ctx.field.label='Desired salary';ctx.field.nearbyText='Notice period';
+    assert.equal(vm.runInContext('deterministicMatcher.matchCustomField(field,profile)',ctx),null);
+    ctx.field.label='Do you NOT agree to relocate?';
+    assert.equal(vm.runInContext('deterministicMatcher.matchCustomField(field,profile)',ctx),null);
+    ctx.profile={customFields:{'Notice Period':'30 days','notice_period':'60 days'}};
+    ctx.field.label='Notice period';
+    assert.equal(vm.runInContext('deterministicMatcher.matchField(field,profile)',ctx).value,null);
 });

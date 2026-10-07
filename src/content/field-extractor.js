@@ -167,8 +167,8 @@ class FieldExtractor {
         const dataAttributes = this.extractDataAttributes(element);
 
         // Resolved label using priority chain
-        const label = labelText || placeholderText || ariaLabel ||
-            element.name || nearbyText || '';
+        const label = [labelText, placeholderText, ariaLabel, element.name, nearbyText]
+            .map(text => this.cleanQuestionLabel(text)).find(Boolean) || '';
         if (globalThis.FieldPolicy?.urlKind({label:labelText, name:element.name, placeholder:placeholderText, ariaLabel, element, type:element.type})) fieldType = 'url';
 
         // Combine all hints for matching
@@ -244,6 +244,11 @@ class FieldExtractor {
     }
 
     getCurrentValue(element) {
+        if (element.tagName === 'SELECT') {
+            const selected = element.options?.[element.selectedIndex];
+            if (globalThis.FieldPolicy?.isPlaceholderLabel(selected?.textContent || selected?.text)) return '';
+            return element.value || '';
+        }
         if (element.getAttribute('data-uxi-widget-type') === 'selectinput') {
             const container = element.closest('[data-automation-id="multiSelectContainer"]');
             // The search input is empty after selection; chips hold the saved value.
@@ -377,7 +382,43 @@ class FieldExtractor {
             }
         }
 
-        return texts.find(t => t.length > 0)?.slice(0,4000) || '';
+        const associated = texts.map(text => this.cleanQuestionLabel(text)).find(Boolean);
+        if (associated) return associated;
+
+        // Some application sites put the question in a div/span above a nested
+        // select instead of associating a label with it. Stay within one field:
+        // never borrow text from a neighbouring question or the page heading.
+        let control = element;
+        for (let depth = 0; control?.parentElement && depth < 5; depth++, control = control.parentElement) {
+            const wrapper = control.parentElement;
+            const others = [...wrapper.querySelectorAll('input:not([type="hidden"]), select, textarea, [role="combobox"], [contenteditable="true"]')]
+                .filter(node => node !== element && !node.contains(element) && !element.contains(node));
+            if (others.length) break;
+            const candidates = [...wrapper.querySelectorAll('label, [class*="label"], [class*="Label"], [data-automation-id="formLabel"]')]
+                .filter(node => !node.contains(element) && !element.contains(node) &&
+                    !node.closest('[role="listbox"], [role="option"], [data-sja-ui]'));
+            for (const node of candidates) {
+                const text = this.cleanQuestionLabel(node.textContent);
+                if (text) return text;
+            }
+            let previous = control.previousElementSibling;
+            while (previous) {
+                if (!previous.matches('script, style, [data-sja-ui]') &&
+                    !previous.querySelector('input, select, textarea, [role="option"], [role="listbox"]')) {
+                    const text = this.cleanQuestionLabel(previous.textContent);
+                    if (text && text.split(/\s+/).length >= 2) return text;
+                }
+                previous = previous.previousElementSibling;
+            }
+        }
+        return '';
+    }
+
+    cleanQuestionLabel(text) {
+        const label = String(text || '').replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim();
+        if (!label || /^(?:select(?: one)?|please select|choose(?: one)?)(?: required)?$/i.test(label) ||
+            /^(?:questionnaire|primaryquestionnaire|question)[-_\d]+$/i.test(label)) return '';
+        return label.slice(0, 4000);
     }
 
     /**

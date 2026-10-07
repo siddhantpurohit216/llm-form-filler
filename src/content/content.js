@@ -198,7 +198,6 @@
                 f.type !== 'url' && globalThis.FieldPolicy?.category(f) !== 'accuracy_declaration' &&
                 !(f.recordType && /dateSection/.test(f.element.id || '')) &&
                 f.type !== 'skills' && !f.isFilledByExtension && !fieldExtractor.getCurrentValue(f.element) &&
-                !(f.matchConfidence >= CONFIDENCE.HIGH && f.matchedValue != null && f.matchedValue !== '') &&
                 sessionCache.get(f.id)?.source !== FIELD_SOURCE.USER
             );
 
@@ -278,7 +277,20 @@
             // Only auto-fill if confidence is high enough
             if (field.matchConfidence >= CONFIDENCE.HIGH && field.matchedValue != null && field.matchedValue !== '') {
                 console.log(`[SmartJobAutofill] Auto-filling ${field.id} with "${field.matchedValue}" (Confidence: ${field.matchConfidence})`);
-                const result = await autofillEngine.fill(field.element, field.matchedValue, field.type);
+                let fillValue = field.matchedValue;
+                if (field.strictChoice && ['dropdown','combobox','radio'].includes(field.type)) {
+                    const details = await autofillEngine.captureFieldOptions(field);
+                    const expected = String(field.matchedValue).trim().toLowerCase();
+                    const option = details.find(option => option.label.trim().toLowerCase() === expected);
+                    if (!option) {
+                        const result = {success:false,method:'strictChoice:noExactOption'};
+                        if (dropdownAttempts.has(field.element)) dropdownAttempts.get(field.element).result = result;
+                        failedDropdowns.push(field.label || field.name);
+                        continue;
+                    }
+                    fillValue = field.element.tagName === 'SELECT' || field.type === 'radio' ? option.value : option.label;
+                }
+                const result = await autofillEngine.fill(field.element, fillValue, field.type);
 
                 if (['combobox', 'dropdown'].includes(field.type)) {
                     dropdownAttempts.get(field.element).result = result;
@@ -338,6 +350,9 @@
      */
     async function requestLLMBatch(fields) {
         const missingPreferences = new Set();
+        fields.forEach(field => {
+            if (fieldExtractor.refreshField) Object.assign(field, fieldExtractor.refreshField(field.element));
+        });
         fields = fields.filter(field => {
             const category = globalThis.FieldPolicy?.category(field);
             if (['work_eligibility','previous_employment','disability'].includes(category) && globalThis.FieldPolicy.preference(category,profile) == null) {
@@ -370,7 +385,8 @@
         if (actualUnresolved.length === 0) return withPreferences(previousNote);
 
         try {
-            const fieldData = actualUnresolved.map(f => ({
+            const fieldData = actualUnresolved.map(f => inlineUI.describeAIField
+                ? inlineUI.describeAIField(f, f.optionDetails) : ({
                 id: f.id,
                 label: f.label,
                 placeholder: f.placeholder,
@@ -379,7 +395,8 @@
                 hints: f.allHints,
                 options: f.options,
                 optionDetails:f.optionDetails,
-                context:String(f.nearbyText || '').slice(0,400),
+                context:String(f.nearbyText || '').slice(0,2000),
+                inputType:f.element.type,
                 category:globalThis.FieldPolicy?.category(f),
                 constraints: f.constraints
             }));
@@ -396,7 +413,8 @@
 
             const note = response?.error ? `AI unavailable: ${response.error}` :
                 !response?.mappings?.length ? 'Remaining questions need a saved answer or manual review' : '';
-            const retryAt = response?.error ? Date.now() + (response.retryAfterMs || 60000) : Infinity;
+            const retryAt = response?.error ? Date.now() + (response.retryAfterMs || 60000) :
+                response?.mappings?.length ? Infinity : Date.now() + 60000;
             actualUnresolved.forEach(field => aiAttempts.set(field.element, {profileSignature, fieldSignature:JSON.stringify([field.label,field.type,field.options,field.optionDetails]), note, retryAt}));
             if (response?.error) return withPreferences(note);
             if (response && response.mappings) {

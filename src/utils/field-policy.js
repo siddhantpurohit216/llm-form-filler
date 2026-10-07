@@ -20,6 +20,7 @@
             return true;
         } catch { return false; }
     }
+    const isPlaceholderLabel = text => /^(?:please )?(?:select|choose)(?: (?:one|an? option|an? answer))?[\s.*:…-]*$/i.test(String(text || '').trim());
     function category(field) {
         const label = field.label || '';
         if (/undertake|information.*(?:true|accurate)|(?:certify|declare|agree).*accuracy/i.test(label)) return 'accuracy_declaration';
@@ -32,7 +33,8 @@
         const defaults = profile.applicationDefaults || {};
         if (category === 'previous_employment') {
             const value = defaults.previouslyEmployed;
-            return value === true || value === 'Yes' ? 'Yes' : value === false || value === 'No' ? 'No' : null;
+            // Earlier user configuration requested No as the previous-employment default.
+            return value === true || /^(yes|true)$/i.test(String(value)) ? 'Yes' : 'No';
         }
         if (category === 'disability') return defaults.disability ?? null;
         if (category === 'work_eligibility') return defaults.applicationCountry ? defaults.workEligibility?.[defaults.applicationCountry] ?? null : null;
@@ -61,5 +63,5 @@
         }
         return true;
     }
-    globalThis.FieldPolicy = {urlKind,validURL,category,preference,validate};
+    globalThis.FieldPolicy = {urlKind,validURL,category,preference,validate,isPlaceholderLabel};
 })();

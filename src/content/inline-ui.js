@@ -73,7 +73,7 @@ class InlineUI {
         this.pageButton.addEventListener('click', onAutofill);
         const hint = document.createElement('p');
         hint.className = 'sja-panel-hint';
-        hint.textContent = 'Hover a field to edit, save, or use AI.';
+        hint.textContent = 'Click or hover a field, then choose AI to fill only that field.';
         body.append(this.pageStatus, this.pageButton, hint);
         this.pagePanel.append(header, body);
         document.body.appendChild(this.pagePanel);
@@ -190,6 +190,7 @@ class InlineUI {
     }
 
     hasValidationError(element) {
+        if (element.willValidate && element.validity?.valid === false) return true;
         return typeof autofillEngine !== 'undefined'
             ? autofillEngine.hasFieldError?.(element)
             : element.getAttribute('aria-invalid') === 'true';
@@ -271,25 +272,86 @@ class InlineUI {
     }
 
     async handleRegenerate(element, matchData) {
-        element.classList.add('sja-loading');
-        element.disabled = true;
-        try {
-            const response = await chrome.runtime.sendMessage({
-                type: MESSAGE_TYPES.LLM_GENERATE,
-                data: { fieldId: matchData.fieldId, fieldInfo: { label: matchData.label, type: matchData.type }, regenerate: true }
-            });
-            if (response?.value) {
-                const result = await autofillEngine.fill(element, response.value, matchData.type || 'text');
-                if (!result.success) throw new Error('Could not fill this field');
-                sessionCache.updateValue(matchData.fieldId, response.value, FIELD_SOURCE.LLM);
-                this.updateConfidenceIndicator(element, { ...matchData, confidence: response.confidence || 0.8, source: FIELD_SOURCE.LLM });
-            }
-        } catch (error) {
-            console.error('[InlineUI] Regenerate failed:', error);
-        } finally {
-            element.classList.remove('sja-loading');
-            element.disabled = false;
+        this.showGenerateModal(element, matchData);
+    }
+
+    async buildAIFieldInfo(element) {
+        if (!element.isConnected || element.disabled || element.readOnly) {
+            throw new Error('This field is no longer editable.');
         }
+        const field = fieldExtractor.refreshField(element);
+        const optionDetails = await autofillEngine.captureFieldOptions(field);
+        return this.describeAIField(field, optionDetails);
+    }
+
+    describeAIField(field, optionDetails = []) {
+        const element = field.element;
+        return {
+            id: field.id, label: field.label, name: field.name, type: field.type, inputType: element.type,
+            placeholder: field.placeholder, hints: field.allHints,
+            context: String(field.nearbyText || '').slice(0, 2000),
+            options: optionDetails.map(option => option.label), optionDetails,
+            constraints: field.constraints, isLongForm: field.isLongForm,
+            currentValue: fieldExtractor.getCurrentValue(element),
+            category: globalThis.FieldPolicy?.category(field),
+            pageContext: {title: document.title, url: location.origin + location.pathname}
+        };
+    }
+
+    async fillSelectedFieldWithAI(element, userPrompt = '', isActive = () => true) {
+        const before = JSON.stringify(fieldExtractor.getCurrentValue(element));
+        const fieldInfo = await this.buildAIFieldInfo(element);
+        const response = await chrome.runtime.sendMessage({
+            type: MESSAGE_TYPES.LLM_FIELD_GENERATE,
+            data: {fieldId: fieldInfo.id, fieldInfo, userPrompt}
+        });
+        if (response?.value == null || response.value === '') {
+            throw new Error(response?.error || 'No supported answer found. Add the missing information to your profile or instructions.');
+        }
+        if (!isActive()) throw new Error('AI fill cancelled.');
+        // A selected field may already contain text, but never overwrite a newer edit.
+        if (!element.isConnected || element.disabled || element.readOnly ||
+            before !== JSON.stringify(fieldExtractor.getCurrentValue(element))) {
+            throw new Error('The field changed while AI was working. Try again to use its latest value.');
+        }
+        const latest = fieldExtractor.refreshField(element);
+        if (latest.label !== fieldInfo.label || latest.type !== fieldInfo.type ||
+            JSON.stringify(latest.constraints) !== JSON.stringify(fieldInfo.constraints)) {
+            throw new Error('The question changed while AI was working. Try again.');
+        }
+        if (['dropdown', 'combobox', 'radio'].includes(fieldInfo.type)) {
+            const options = await autofillEngine.captureFieldOptions(latest);
+            if (!options.some(option => String(option.value) === String(response.value) || option.label === String(response.value))) {
+                throw new Error('The available options changed. Try again.');
+            }
+            if (!isActive() || !element.isConnected || element.disabled || element.readOnly ||
+                before !== JSON.stringify(fieldExtractor.getCurrentValue(element))) {
+                throw new Error('The field changed or AI fill was cancelled. Try again.');
+            }
+        }
+        const option = fieldInfo.optionDetails.find(option =>
+            String(option.value) === String(response.value) || option.label === String(response.value));
+        const value = element.tagName !== 'SELECT' && fieldInfo.type !== 'radio' && option
+            ? option.label : response.value;
+        const result = await autofillEngine.fill(element, value, fieldInfo.type);
+        if (!result.success) {
+            throw new Error('Could not confirm the field selection. Review its current value.');
+        }
+        // Reading validity avoids firing another `invalid` event. Frameworks
+        // may clear setCustomValidity asynchronously after input/change.
+        const started = Date.now();
+        while (element.isConnected && element.willValidate && element.validity?.valid === false && Date.now() - started < 300) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        const needsReview = element.willValidate && element.validity?.valid === false;
+        const validationMessage = needsReview ? element.validationMessage : '';
+        const data = {...fieldInfo, fieldId: fieldInfo.id, value: response.value,
+            confidence: response.confidence, source: FIELD_SOURCE.LLM, reason: response.reason,
+            validationError: !!needsReview};
+        sessionCache.set(fieldInfo.id, data);
+        this.updateConfidenceIndicator(element, data);
+        this.highlightField(element, needsReview ? 'uncertain' : 'inferred');
+        return {needsReview: !!needsReview, validationMessage};
     }
 
     // ========== Generate with AI Modal ==========
@@ -302,22 +364,30 @@ class InlineUI {
     showGenerateModal(element, matchData) {
         this.closeAllModals();
 
-        const fieldLabel = matchData.label || element.placeholder || 'this field';
+        const freshField = fieldExtractor.refreshField(element);
+        const fieldLabel = freshField.label || matchData.label || element.placeholder || 'this field';
+        const compactLabel = fieldLabel.replace(/\s+/g, ' ').trim();
+        let displayLabel = compactLabel;
+        if (compactLabel.length > 100) {
+            const prefix = compactLabel.slice(0, 100);
+            const wordEnd = prefix.lastIndexOf(' ');
+            displayLabel = prefix.slice(0, wordEnd >= 60 ? wordEnd : 100).trimEnd() + '...';
+        }
 
         const modal = document.createElement('div');
         modal.dataset.sjaUi = 'true';
         modal.className = 'sja-modal-overlay';
         modal.innerHTML = `<div class="sja-modal sja-generate-modal">
       <div class="sja-modal-header">
-        <h3>✨ Generate with AI</h3>
+        <h3>Fill this field with AI</h3>
         <button class="sja-modal-close">&times;</button>
       </div>
       <div class="sja-modal-body">
-        <p>Generate AI content for: <strong>${this.escapeHtml(fieldLabel)}</strong></p>
+        <p>Selected field: <strong class="sja-selected-field-label">${this.escapeHtml(displayLabel)}</strong></p>
         <div class="sja-modal-field">
-          <label for="sja-generate-prompt">Your instructions:</label>
+          <label for="sja-generate-prompt">Instructions (optional):</label>
           <textarea id="sja-generate-prompt" class="sja-input sja-generate-textarea"
-            placeholder="e.g., Write a professional cover letter under 600 characters for this job."
+            placeholder="Use my saved profile, or add specific instructions for this answer."
             rows="4"></textarea>
         </div>
         <div id="sja-generate-status" class="sja-generate-status" style="display:none;">
@@ -327,12 +397,13 @@ class InlineUI {
       </div>
       <div class="sja-modal-footer">
         <button class="sja-btn sja-btn-secondary sja-modal-cancel">Cancel</button>
-        <button class="sja-btn sja-btn-primary sja-generate-confirm">✨ Generate</button>
+        <button class="sja-btn sja-btn-primary sja-generate-confirm">Fill with AI</button>
       </div>
     </div>`;
 
         document.body.appendChild(modal);
         this.activeModals.set(element, modal);
+        modal.querySelector('.sja-selected-field-label').setAttribute('title', fieldLabel);
 
         // Event listeners
         const promptTextarea = modal.querySelector('#sja-generate-prompt');
@@ -345,66 +416,22 @@ class InlineUI {
 
         generateBtn.addEventListener('click', async () => {
             const userPrompt = promptTextarea.value.trim();
-            if (!userPrompt) {
-                promptTextarea.focus();
-                promptTextarea.classList.add('sja-input-error');
-                setTimeout(() => promptTextarea.classList.remove('sja-input-error'), 1500);
-                return;
-            }
-
             // Show loading state
             generateBtn.disabled = true;
             generateBtn.textContent = '⏳ Generating...';
             statusDiv.style.display = 'flex';
 
             try {
-                const response = await chrome.runtime.sendMessage({
-                    type: MESSAGE_TYPES.LLM_FIELD_GENERATE,
-                    data: {
-                        fieldId: matchData.fieldId || element.id,
-                        fieldInfo: {
-                            label: matchData.label || fieldLabel,
-                            type: matchData.type || 'text',
-                            maxLength: element.maxLength > 0 ? element.maxLength : null
-                        },
-                        userPrompt: userPrompt
-                    }
-                });
-
-                if (response?.value) {
-                    // Fill the field using the autofill engine
-                    const result = await autofillEngine.fill(element, response.value, matchData.type || 'text');
-                if (!result.success) throw new Error('Could not fill this field');
-
-                    // Update cache
-                    sessionCache.set(matchData.fieldId || element.id, {
-                        value: response.value,
-                        confidence: response.confidence || 0.85,
-                        source: FIELD_SOURCE.LLM,
-                        reason: `AI generated: ${userPrompt.substring(0, 50)}`
-                    });
-
-                    // Update indicator
-                    this.updateConfidenceIndicator(element, {
-                        confidence: response.confidence || 0.85,
-                        source: FIELD_SOURCE.LLM
-                    });
-
-                    this.highlightField(element, 'inferred');
-                    this.closeModal(element);
-                    this.showToast('✨ Content generated!');
-                } else {
-                    const errorMsg = response?.error || 'Generation failed. Check your API key.';
-                    this.showToast(`❌ ${errorMsg}`, 'error');
-                    generateBtn.disabled = false;
-                    generateBtn.textContent = '✨ Generate';
-                    statusDiv.style.display = 'none';
-                }
+                const result = await this.fillSelectedFieldWithAI(element, userPrompt, () => this.activeModals.get(element) === modal);
+                this.closeModal(element);
+                this.showToast(result.needsReview
+                    ? `Value filled. Review the field validation${result.validationMessage ? ': ' + result.validationMessage : '.'}`
+                    : 'Selected field filled with AI');
             } catch (error) {
                 console.error('[InlineUI] Generate failed:', error);
-                this.showToast('❌ Generation failed', 'error');
+                this.showToast(error.message || 'AI could not fill this field', 'error');
                 generateBtn.disabled = false;
-                generateBtn.textContent = '✨ Generate';
+                generateBtn.textContent = 'Fill with AI';
                 statusDiv.style.display = 'none';
             }
         });

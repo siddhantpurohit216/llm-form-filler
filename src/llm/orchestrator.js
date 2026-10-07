@@ -3,7 +3,7 @@
  * Handles batching, retries, and fail-safe fallbacks
  */
 
-import { FIELD_MAPPING_PROMPT, LONG_FORM_PROMPT, FIELD_GENERATE_PROMPT, RESUME_STRUCTURE_PROMPT } from './prompts.js';
+import { FIELD_MAPPING_PROMPT, LONG_FORM_PROMPT, RESUME_STRUCTURE_PROMPT } from './prompts.js';
 
 export class LLMOrchestrator {
     constructor() {
@@ -51,7 +51,7 @@ export class LLMOrchestrator {
         // Stable IDs let cached answers survive page refreshes and different tabs.
         const canonical = fields.map((field, index) => ({...field, id:`field-${index}`}));
         const key = JSON.stringify([settings.provider, settings.model, settings.apiKey, profile,
-            canonical.map(({id, label, hints, type, options, optionDetails, context, constraints, isLongForm,category}) => ({id, label, hints, type, options, optionDetails, context, constraints, isLongForm,category}))]);
+            canonical]);
         let cached = this.mappingCache.get(key);
         if (cached && Date.now() - cached.time >= this.cacheTTL) {
             this.mappingCache.delete(key);
@@ -67,7 +67,7 @@ export class LLMOrchestrator {
             }
             try {
                 mappings = await request;
-                this.mappingCache.set(key, {time:Date.now(), mappings});
+                if (mappings.length) this.mappingCache.set(key, {time:Date.now(), mappings});
                 if (this.mappingCache.size > 50) this.mappingCache.delete(this.mappingCache.keys().next().value);
             } finally { this.mappingInFlight.delete(key); }
         }
@@ -86,11 +86,14 @@ export class LLMOrchestrator {
         try {
             const parsed = this.extractJSON(response);
             if (!parsed) throw new Error('AI response was not valid JSON');
-            const mappings = Array.isArray(parsed) ? parsed : parsed.mappings;
+            const mappings = Array.isArray(parsed) ? parsed : parsed.mappings || parsed.answers ||
+                (fields.length === 1 && Object.prototype.hasOwnProperty.call(parsed,'value') ? [{...parsed,fieldId:fields[0].id}] : null);
             if (!Array.isArray(mappings)) throw new Error('AI response did not contain a mappings array');
-            return mappings.filter(mapping => {
+            return mappings.flatMap(mapping => {
                 const field = fields.find(field=>field.id === mapping.fieldId);
-                return field && (!globalThis.FieldPolicy || globalThis.FieldPolicy.validate(field,mapping,profile));
+                if (!field) return [];
+                const answer = this.normalizeFieldAnswer(field, mapping, profile);
+                return this.validateFieldAnswer(field, answer, profile).value != null ? [answer] : [];
             });
         } catch (error) {
             console.error('[LLM] Failed to parse mapping response:', error);
@@ -128,25 +131,77 @@ export class LLMOrchestrator {
      * Used by the "Generate with AI" feature
      */
     async generateFieldContent(fieldInfo, userPrompt, profile, settings) {
-        const prompt = this.buildFieldGeneratePrompt(fieldInfo, userPrompt, profile);
-        const response = await this.callLLM(prompt, settings);
-
-        if (!response) {
-            return { value: null, confidence: 0, error: 'LLM call failed' };
-        }
-
+        const field = {...fieldInfo, id:fieldInfo.id || 'selected-field'};
+        if (userPrompt?.trim()) field.userInstructions = userPrompt.trim();
         try {
-            const parsed = this.extractJSON(response);
-            if (parsed) {
-                return {
-                    value: parsed.value || parsed.answer || parsed.response || response,
-                    confidence: parsed.confidence || 0.85
-                };
-            }
-            return { value: response.trim(), confidence: 0.8 };
-        } catch {
-            return { value: response.trim(), confidence: 0.8 };
+            const mappings = await this.batchMapFields([field], profile, settings);
+            return mappings[0] || {value:null,error:'No supported answer found. Save the missing profile preference or review the question.'};
+        } catch (error) {
+            return {value:null,error:error.message,retryAfterMs:error.retryAfterMs || 0};
         }
+    }
+
+    normalizeFieldAnswer(field, mapping, profile) {
+        const answer = {...mapping};
+        const options = field.optionDetails || [];
+        // The original field-generation response may contain just a label/value.
+        // Resolve it to the actual HTML option before the shared validator runs.
+        const option = options.find(option => String(option.value) === String(answer.value) ||
+            option.label.trim().toLowerCase() === String(answer.value).trim().toLowerCase());
+        if (option) answer.value = option.value;
+        const category = globalThis.FieldPolicy?.category(field);
+        if (category) answer.category = category;
+        if (category === 'previous_employment' && option) {
+            const yesNo = option.label.trim().match(/^(yes|no)\b/i)?.[1];
+            if (yesNo) {
+                const selected = yesNo.toLowerCase() === 'yes' ? 'Yes' : 'No';
+                const saved = globalThis.FieldPolicy.preference(category, profile);
+                if (selected !== saved) return {...answer,value:null};
+                if (answer.answer == null) answer.answer = selected;
+                // Confidence comes from an exact option matching the explicit
+                // saved answer/user default, rather than the model's prose score.
+                answer.confidence = .95;
+            }
+        }
+        return answer;
+    }
+
+    validateFieldAnswer(fieldInfo, parsed, profile) {
+        if (parsed.value == null || parsed.value === '') return {value:null};
+        if (globalThis.FieldPolicy && !globalThis.FieldPolicy.validate(fieldInfo, parsed, profile)) {
+            return {value: null, error: 'This answer needs a saved profile fact, an available option, or manual review.'};
+        }
+        if (fieldInfo.type === 'checkbox') {
+            const saved = String(parsed.profilePath || '').split('.').reduce((data, key) => data?.[key], profile);
+            if (typeof parsed.value !== 'boolean' || typeof saved !== 'boolean' ||
+                parsed.answer !== saved || parsed.value !== saved) {
+                return {value: null, error: 'Save an explicit yes/no preference for this checkbox first.'};
+            }
+        }
+        const text = String(parsed.value);
+        const c = fieldInfo.constraints || {};
+        if ((c.maxLength != null && text.length > c.maxLength) ||
+            (c.minLength != null && text.length < c.minLength)) {
+            return {value: null, error: 'AI answer does not meet the field length limits.'};
+        }
+        if (c.pattern) {
+            try {
+                if (!new RegExp(`^(?:${c.pattern})$`, 'v').test(text)) {
+                    return {value: null, error: 'AI answer does not match the required format.'};
+                }
+            } catch { return {value: null, error: 'Review this field: its format could not be validated.'}; }
+        }
+        const inputType = fieldInfo.inputType || fieldInfo.type;
+        if (['number', 'date', 'month', 'time'].includes(inputType)) {
+            const numeric = inputType === 'number';
+            const value = numeric ? Number(parsed.value) : text;
+            if ((numeric && !Number.isFinite(value)) ||
+                (c.min != null && c.min !== '' && value < (numeric ? Number(c.min) : c.min)) ||
+                (c.max != null && c.max !== '' && value > (numeric ? Number(c.max) : c.max))) {
+                return {value: null, error: 'AI answer is outside the field limits.'};
+            }
+        }
+        return parsed;
     }
 
     /**
@@ -182,6 +237,8 @@ export class LLMOrchestrator {
         const fieldsList = fields.map(f => ({
             id: f.id,
             label: f.label,
+            name:f.name, inputType:f.inputType, currentValue:f.currentValue,
+            pageContext:f.pageContext, userInstructions:f.userInstructions,
             hints: f.hints?.slice(0, 5) || [],
             type: f.type,
             options: f.options || [],
@@ -193,9 +250,8 @@ export class LLMOrchestrator {
             category:f.category || null
         }));
 
-        return FIELD_MAPPING_PROMPT
-            .replace('{FIELDS}', JSON.stringify(fieldsList, null, 2))
-            .replace('{PROFILE}', JSON.stringify(profile, null, 2));
+        const values = {FIELDS:JSON.stringify(fieldsList, null, 2), PROFILE:JSON.stringify(profile, null, 2)};
+        return FIELD_MAPPING_PROMPT.replace(/\{(FIELDS|PROFILE)\}/g, (_, key) => values[key]);
     }
 
     /**
@@ -213,23 +269,6 @@ export class LLMOrchestrator {
         return LONG_FORM_PROMPT
             .replace('{CONTEXT}', JSON.stringify(context, null, 2))
             .replace('{REGENERATE}', regenerate ? 'Generate a different response than before.' : '');
-    }
-
-    /**
-     * Build field generation prompt for "Generate with AI" feature
-     */
-    buildFieldGeneratePrompt(fieldInfo, userPrompt, profile) {
-        // Gather some page context
-        const pageTitle = typeof document !== 'undefined' ? document.title : '';
-        const pageContext = pageTitle || 'Job application page';
-
-        return FIELD_GENERATE_PROMPT
-            .replace('{USER_PROMPT}', userPrompt || 'Generate appropriate content for this field')
-            .replace('{FIELD_LABEL}', fieldInfo.label || 'Unknown field')
-            .replace('{FIELD_TYPE}', fieldInfo.type || 'text')
-            .replace('{MAX_LENGTH}', String(fieldInfo.maxLength || 'No limit'))
-            .replace('{PROFILE}', JSON.stringify(profile, null, 2))
-            .replace('{PAGE_CONTEXT}', pageContext);
     }
 
     /**

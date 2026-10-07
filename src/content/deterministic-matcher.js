@@ -123,6 +123,22 @@ class DeterministicMatcher {
             reason: 'Workday field match'
         };
 
+        const customMatch = this.matchCustomField(field, profile);
+        if (customMatch) return customMatch;
+
+        // Saved gender is an explicit fact, not a generated demographic inference.
+        // Match the question itself; nearby questions can mention other facts.
+        if (/\b(?:gender|sex)\b/i.test([field.label,field.ariaLabel,field.placeholder].filter(Boolean).join(' '))) {
+            const candidates = [['contact.gender',profile.contact?.gender],
+                ['applicationDefaults.gender',profile.applicationDefaults?.gender], ['gender',profile.gender],
+                ...Object.entries(profile.customFields || {}).filter(([label]) => /^(?:gender|sex)$/i.test(label.trim()))
+                    .map(([label,value]) => [`customFields.${label}`,value])];
+            const saved = candidates.find(([,value]) => typeof value === 'string' && value.trim());
+            return saved ? {value:saved[1].trim(),confidence:.95,source:FIELD_SOURCE.DETERMINISTIC,
+                profilePath:saved[0],strictChoice:true,reason:'Saved gender matched to question label'} :
+                {value:null,confidence:0,source:null,reason:'No saved gender answer'};
+        }
+
         // Try matching strategies in order of confidence
         const strategies = [
             this.exactIdMatch.bind(this),
@@ -173,6 +189,37 @@ class DeterministicMatcher {
         };
     }
 
+    /** Match explicit custom answers using the question's own label, not nearby text. */
+    matchCustomField(field, profile) {
+        const words = text => String(text || '').replace(/([a-z])([A-Z])/g, '$1 $2')
+            .toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+        const questionKey = text => words(text)
+            .replace(/^(?:please )?(?:select|choose) the option (?:which|that) best (?:defines|describes) your /, '')
+            .replace(/^(?:please )?(?:enter|provide|specify|select|choose|indicate) (?:the |your )?/, '')
+            .replace(/^(?:what is|what are) (?:the |your )?/, '')
+            .replace(/^(?:your|the) /, '')
+            .replace(/ required$/, '').trim();
+        const hints = [field.label,field.ariaLabel,field.placeholder,field.name].filter(Boolean);
+        const matches = [];
+        for (const [label,value] of Object.entries(profile.customFields || {})) {
+            if (!label.trim() || value == null || String(value).trim() === '' ||
+                !['string','number','boolean'].includes(typeof value)) continue;
+            const key = words(label);
+            let confidence = 0;
+            if (hints.some(hint => words(hint) === key)) confidence = .95;
+            else if (hints.some(hint => questionKey(hint) === questionKey(label))) confidence = .9;
+            if (confidence) matches.push({value,confidence,source:FIELD_SOURCE.DETERMINISTIC,
+                profilePath:`customFields.${label}`,strictChoice:true,reason:`Saved custom field: ${label}`});
+        }
+        if (!matches.length) return null;
+        matches.sort((a,b) => b.confidence - a.confidence);
+        const best = matches.filter(match => match.confidence === matches[0].confidence);
+        if (new Set(best.map(match => JSON.stringify(match.value))).size > 1) {
+            return {value:null,confidence:0,source:null,reason:'Conflicting saved custom answers; review this field'};
+        }
+        return best[0];
+    }
+
     /**
      * Match all fields to profile data
      * @param {Array} fields - Array of extracted fields
@@ -188,6 +235,7 @@ class DeterministicMatcher {
                 matchConfidence: match.confidence,
                 matchSource: match.source,
                 matchedProfilePath: match.profilePath,
+                strictChoice: !!match.strictChoice,
                 matchReason: match.reason
             };
         });

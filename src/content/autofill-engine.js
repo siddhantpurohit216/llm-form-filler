@@ -123,7 +123,7 @@ class AutofillEngine {
 
     async captureFieldOptions(field) {
         const element = field.element;
-        if (element.tagName === 'SELECT') return [...element.options].filter(o=>o.value && !o.disabled)
+        if (element.tagName === 'SELECT') return [...element.options].filter(o=>o.value && !o.disabled && !globalThis.FieldPolicy?.isPlaceholderLabel(o.textContent || o.text))
             .map(o=>({label:o.textContent.trim(),value:o.value}));
         if (field.type === 'radio') {
             return [...(element.form || element.getRootNode()).querySelectorAll('input[type="radio"]')]

@@ -161,3 +161,15 @@ MIT License - see LICENSE file for details.
 ---
 
 **Made with ❤️ for job seekers everywhere**
+
+### Fill one field with AI
+
+Click or hover an editable field and choose **AI** in its toolbar. The **Fill this field with AI** dialog lets you add optional instructions or use your saved profile directly. Only that field is filled. The request includes its complete question, options, hints, current value, validation constraints, page title/path, and the saved profile. Configure an AI provider and API key in the extension settings first.
+
+Missing personal facts or unsupported options remain for review. Closing the dialog or editing the field while the request is running prevents the delayed answer from replacing your input.
+
+Manually added profile fields also participate in deterministic matching. Use a descriptive label such as **Notice period** or copy the exact question, then save the profile. Exact labels and common question wrappers (for example, “What is your notice period?”) can fill automatically. Dropdown answers must match an available option; approximate wording stays a suggestion or requires AI. Conflicting saved answers remain for review.
+
+Field AI and page Autofill share the same batched AI resolver, prompt, saved-profile checks, answer validation, and cache. Field AI sends one selected field plus optional instructions; page Autofill sends eligible unanswered fields after deterministic filling and preserves existing/manual answers. Native “Please Select” placeholders count as unanswered even when their HTML value is nonempty.
+
+Previous-employment questions use the saved application preference, or the user-configured **No** default when absent, consistently in field AI and page Autofill. An explicit saved **Yes** overrides that default. This is a configured answer, not a conclusion inferred from the resume. Failed deterministic fills that remain empty are included in page AI assistance.
